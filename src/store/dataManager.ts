@@ -41,12 +41,23 @@ export interface Order {
 
 // Initial Data
 const initialMenus: MenuItem[] = [
-  { id: 'm1', name: 'Kopi Hitam', price: 10000, category: 'Minuman', available: true, image: 'https://images.unsplash.com/photo-1498804103079-a6351b050096?auto=format&fit=crop&q=80&w=200&h=200' },
-  { id: 'm2', name: 'Kopi Susu Gula Aren', price: 15000, category: 'Minuman', available: true, image: 'https://images.unsplash.com/photo-1541167760496-1628856ab772?auto=format&fit=crop&q=80&w=200&h=200' },
-  { id: 'm3', name: 'Ayam Bakar Cabe Ijo', price: 25000, category: 'Makanan', available: true, image: 'https://images.unsplash.com/photo-1598514982205-f36b96d1e8d4?auto=format&fit=crop&q=80&w=200&h=200' },
-  { id: 'm4', name: 'Indomie Goreng Telur', price: 14000, category: 'Makanan', available: true, image: 'https://images.unsplash.com/photo-1612929633738-8fe01f7c8166?auto=format&fit=crop&q=80&w=200&h=200' },
-  { id: 'm5', name: 'Kentang Goreng', price: 12000, category: 'Snack', available: true, image: 'https://images.unsplash.com/photo-1576107232684-1279f390859f?auto=format&fit=crop&q=80&w=200&h=200' },
-  { id: 'm6', name: 'Pisang Bakar Coklat Keju', price: 15000, category: 'Snack', available: true, image: 'https://images.unsplash.com/photo-1662973902347-1af609c1ee94?auto=format&fit=crop&q=80&w=200&h=200' }
+  // Indomie Variations
+  { id: 'm1', name: 'Indomie Polos', price: 8000, category: 'Makanan', available: true, image: 'https://images.unsplash.com/photo-1612929633738-8fe01f7c8166?auto=format&fit=crop&q=80&w=200&h=200' },
+  { id: 'm2', name: 'Telur (Tambahan)', price: 3000, category: 'Makanan', available: true, image: 'https://images.unsplash.com/photo-1588165171080-c89acfa5ee83?auto=format&fit=crop&q=80&w=200&h=200' },
+  { id: 'm3', name: 'Kornet (Tambahan)', price: 3000, category: 'Makanan', available: true, image: 'https://images.unsplash.com/photo-1628268909376-e8c56cc8d197?auto=format&fit=crop&q=80&w=200&h=200' },
+  { id: 'm4', name: 'Keju (Tambahan)', price: 2000, category: 'Makanan', available: true, image: 'https://images.unsplash.com/photo-1486297678162-eb2a19b0a32d?auto=format&fit=crop&q=80&w=200&h=200' },
+
+  // General Foods
+  { id: 'm5', name: 'Kentang Goreng', price: 10000, category: 'Snack', available: true, image: 'https://images.unsplash.com/photo-1576107232684-1279f390859f?auto=format&fit=crop&q=80&w=200&h=200' },
+  { id: 'm6', name: 'Rujak Cireng', price: 15000, category: 'Snack', available: true, image: 'https://images.unsplash.com/photo-1626082927389-6cd097cdc6ec?auto=format&fit=crop&q=80&w=200&h=200' },
+  { id: 'm7', name: 'Mix Platter', price: 15000, category: 'Snack', available: true, image: 'https://images.unsplash.com/photo-1541529086526-db283c563270?auto=format&fit=crop&q=80&w=200&h=200' },
+  { id: 'm8', name: 'Cireng Isi / 5pcs', price: 10000, category: 'Snack', available: true, image: 'https://images.unsplash.com/photo-1626082928842-8c886e58f0cf?auto=format&fit=crop&q=80&w=200&h=200' },
+  { id: 'm9', name: 'Pisang Bakar', price: 10000, category: 'Snack', available: true, image: 'https://images.unsplash.com/photo-1662973902347-1af609c1ee94?auto=format&fit=crop&q=80&w=200&h=200' },
+  { id: 'm10', name: 'Ketan Susu', price: 10000, category: 'Snack', available: true, image: 'https://images.unsplash.com/photo-1551024601-bec78aea704b?auto=format&fit=crop&q=80&w=200&h=200' },
+  { id: 'm11', name: 'Roti Bakar', price: 10000, category: 'Snack', available: true, image: 'https://images.unsplash.com/photo-1506084868230-bb9d95c24759?auto=format&fit=crop&q=80&w=200&h=200' },
+
+  // Pancong Lumer & Variants
+  { id: 'm12', name: 'Pancong Lumer', price: 10000, category: 'Snack', available: true, image: 'https://images.unsplash.com/photo-1534438327276-14e5300c3a48?auto=format&fit=crop&q=80&w=200&h=200' }
 ];
 
 const initialTables: Table[] = Array.from({ length: 5 }, (_, i) => ({
