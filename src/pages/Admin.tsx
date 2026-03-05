@@ -58,6 +58,28 @@ export default function Admin() {
   const totalRevenue = completedOrders.reduce((sum, o) => sum + o.totalAmount, 0);
   const occupiedTables = tables.filter(t => t.status === 'Aktif/Unpaid');
 
+  // Compute Monthly Revenue Chart Data (12 bulan terakhir)
+  const monthlyRevenue = (() => {
+    const now = new Date();
+    const months: { label: string; value: number; month: number; year: number }[] = [];
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      months.push({
+        label: d.toLocaleDateString('id-ID', { month: 'short' }),
+        value: 0,
+        month: d.getMonth(),
+        year: d.getFullYear()
+      });
+    }
+    completedOrders.forEach(order => {
+      const d = new Date(order.createdAt);
+      const entry = months.find(m => m.month === d.getMonth() && m.year === d.getFullYear());
+      if (entry) entry.value += order.totalAmount;
+    });
+    return months;
+  })();
+  const maxMonthlyRevenue = Math.max(...monthlyRevenue.map(m => m.value), 1);
+
   // Menu Management
   const handleSaveMenu = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -507,6 +529,58 @@ export default function Admin() {
                     <p style={{ fontSize: '10px', fontWeight: 800, color: '#4472c4', margin: '0 0 16px 0', letterSpacing: '0.5px' }}>SNACKS</p>
                     <p style={{ fontSize: '12px', color: '#94a3b8', margin: '0 0 4px 0' }}>Snacks</p>
                     <p style={{ fontSize: '14px', fontWeight: 800, color: '#0f172a', margin: 0 }}>Rp {formatCompact(categoryRevenue.SNACKS)}</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Grafik Pemasukan Bulanan */}
+              <div style={{ backgroundColor: 'white', borderRadius: '16px', padding: '20px', border: '1px solid #f1f5f9', boxShadow: '0 2px 4px rgba(0,0,0,0.02)', marginBottom: '24px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                  <h3 style={{ fontSize: '14px', fontWeight: 700, color: '#0f172a', margin: 0 }}>📊 Grafik Pemasukan Bulanan</h3>
+                  <span style={{ fontSize: '11px', color: '#ea580c', fontWeight: 700, backgroundColor: '#fff7ed', padding: '4px 10px', borderRadius: '12px' }}>12 Bulan</span>
+                </div>
+                {/* Bar chart area */}
+                <div style={{ display: 'flex', alignItems: 'flex-end', gap: '5px', height: '120px', paddingBottom: '28px', position: 'relative', overflowX: 'auto' }}>
+                  {monthlyRevenue.map((m, idx) => {
+                    const heightPct = maxMonthlyRevenue > 0 ? (m.value / maxMonthlyRevenue) * 100 : 0;
+                    const isCurrentMonth = idx === monthlyRevenue.length - 1;
+                    return (
+                      <div key={idx} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: '0 0 auto', width: '28px' }} title={`Rp ${m.value.toLocaleString('id-ID')}`}>
+                        <div
+                          style={{
+                            width: '100%',
+                            height: `${Math.max(heightPct, 4)}%`,
+                            backgroundColor: isCurrentMonth ? '#ea580c' : '#fed7aa',
+                            borderRadius: '4px 4px 0 0',
+                            transition: 'height 0.4s ease',
+                            position: 'relative',
+                            cursor: 'pointer',
+                            minHeight: '4px'
+                          }}
+                        >
+                          {m.value > 0 && (
+                            <div style={{
+                              position: 'absolute', top: '-20px', left: '50%', transform: 'translateX(-50%)',
+                              fontSize: '8px', fontWeight: 700, color: isCurrentMonth ? '#ea580c' : '#94a3b8',
+                              whiteSpace: 'nowrap'
+                            }}>
+                              {m.value >= 1000000 ? `${(m.value/1000000).toFixed(1)}jt` : m.value >= 1000 ? `${(m.value/1000).toFixed(0)}rb` : `${m.value}`}
+                            </div>
+                          )}
+                        </div>
+                        <span style={{ fontSize: '8px', color: isCurrentMonth ? '#ea580c' : '#94a3b8', fontWeight: isCurrentMonth ? 800 : 500, marginTop: '6px', textAlign: 'center' }}>{m.label}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px', paddingTop: '12px', borderTop: '1px dashed #f1f5f9' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <div style={{ width: '10px', height: '10px', backgroundColor: '#ea580c', borderRadius: '2px' }}></div>
+                    <span style={{ fontSize: '10px', color: '#64748b', fontWeight: 600 }}>Bulan Ini</span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <div style={{ width: '10px', height: '10px', backgroundColor: '#fed7aa', borderRadius: '2px' }}></div>
+                    <span style={{ fontSize: '10px', color: '#64748b', fontWeight: 600 }}>Bulan Lalu</span>
                   </div>
                 </div>
               </div>
