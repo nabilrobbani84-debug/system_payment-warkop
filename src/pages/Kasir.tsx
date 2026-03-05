@@ -8,10 +8,11 @@ import {
   type Order, 
   type Table,
   type MenuItem,
+  type OrderStatus,
   listenToDataChanges,
   notifyDataUpdate
 } from '../store/dataManager';
-import { Coffee, Bell, LayoutGrid, Users, ScrollText, BookOpen, Clock, CreditCard, Armchair } from 'lucide-react';
+import { Coffee, Bell, LayoutGrid, Users, ScrollText, BookOpen, Clock, CreditCard } from 'lucide-react';
 
 export default function Kasir() {
   const [orders, setOrders] = useState<Order[]>([]);
@@ -34,19 +35,44 @@ export default function Kasir() {
   const activeOrders = orders.filter(o => o.status === 'Menunggu Pembayaran');
 
   const handleConfirmOrder = (order: Order) => {
-    if(!confirm(`Konfirmasi pembayaran untuk pesanan ${order.id}?`)) return;
+    let message = '';
+    if (order.paymentMethod === 'QRIS') {
+      message = `Apakah Anda sudah memastikan saldo Rp ${order.totalAmount.toLocaleString('id-ID')} masuk ke rekening/QRIS toko?\n\n[OK] = Ya, Sudah\n[Cancel] = Batal`;
+    } else {
+      message = `Konfirmasi penerimaan pembayaran Tunai sejumlah Rp ${order.totalAmount.toLocaleString('id-ID')} untuk pesanan ${order.id}?`;
+    }
+    if(!window.confirm(message)) return;
     
     // Update Order Status
     const ordersCopy = [...orders];
     const index = ordersCopy.findIndex(o => o.id === order.id);
     if (index > -1) {
-      ordersCopy[index] = { ...ordersCopy[index], status: 'Lunas/Diproses' };
+      const updatedOrder = { ...ordersCopy[index], status: 'Lunas/Diproses' as OrderStatus };
+      ordersCopy[index] = updatedOrder;
       saveOrders(ordersCopy);
+      
+      // Auto Sync to Google Sheet
+      import('../store/dataManager').then(m => m.syncToGoogleSheet(updatedOrder));
     }
     
     // Unlock Table
     updateTableStatus(order.tableId, 'Tersedia');
     notifyDataUpdate(); // broadcast change
+  };
+
+  const handleCancelOrder = (order: Order) => {
+    if(!window.confirm(`Yakin ingin membatalkan pesanan ${order.id}? (Pesanan akan ditarik dan meja akan dibuka kembali)`)) return;
+    
+    const ordersCopy = [...orders];
+    const index = ordersCopy.findIndex(o => o.id === order.id);
+    if (index > -1) {
+      ordersCopy[index] = { ...ordersCopy[index], status: 'Batal' as OrderStatus };
+      saveOrders(ordersCopy);
+    }
+    
+    // Unlock Table
+    updateTableStatus(order.tableId, 'Tersedia');
+    notifyDataUpdate();
   };
 
   const getTableNumber = (tableId: string) => {
@@ -188,10 +214,18 @@ export default function Kasir() {
                   <div key={order.id} style={{ backgroundColor: '#ffffff', borderRadius: '16px', padding: '20px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.03)' }}>
                     
                     {/* Order Header */}
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '4px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                         <h3 style={{ fontSize: '16px', fontWeight: 800, color: '#111827', margin: 0 }}>{order.id}</h3>
-                        <span style={{ backgroundColor: '#fee2e2', color: '#ef4444', fontSize: '10px', fontWeight: 700, padding: '2px 6px', borderRadius: '4px' }}>Unpaid</span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span style={{ backgroundColor: '#fee2e2', color: '#ef4444', fontSize: '10px', fontWeight: 700, padding: '2px 6px', borderRadius: '4px' }}>Unpaid</span>
+                          {order.paymentMethod === 'QRIS' && (
+                            <span style={{ backgroundColor: '#e0e7ff', color: '#4f46e5', fontSize: '10px', fontWeight: 700, padding: '2px 6px', borderRadius: '4px' }}>QRIS</span>
+                          )}
+                          {(order.paymentMethod === 'Cash' || !order.paymentMethod) && (
+                            <span style={{ backgroundColor: '#dcfce7', color: '#16a34a', fontSize: '10px', fontWeight: 700, padding: '2px 6px', borderRadius: '4px' }}>CASH</span>
+                          )}
+                        </div>
                       </div>
                       <div style={{ textAlign: 'right' }}>
                         <h3 style={{ fontSize: '16px', fontWeight: 800, color: '#111827', margin: 0 }}>Rp {order.totalAmount.toLocaleString('id-ID')}</h3>
@@ -226,10 +260,15 @@ export default function Kasir() {
                       )}
                     </div>
                     
-                    {/* Action Button */}
-                    <button onClick={() => handleConfirmOrder(order)} style={{ width: '100%', backgroundColor: '#ea580c', color: '#ffffff', border: 'none', borderRadius: '8px', padding: '12px', fontSize: '14px', fontWeight: 700, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                      <CreditCard size={16} /> Confirm Payment
-                    </button>
+                    {/* Action Buttons */}
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button onClick={() => handleCancelOrder(order)} style={{ flex: '0 0 auto', backgroundColor: '#fef2f2', color: '#ef4444', border: '1px solid #fecaca', borderRadius: '8px', padding: '12px 16px', fontSize: '13px', fontWeight: 700, cursor: 'pointer' }}>
+                        Batalkan
+                      </button>
+                      <button onClick={() => handleConfirmOrder(order)} style={{ flex: '1', backgroundColor: '#ea580c', color: '#ffffff', border: 'none', borderRadius: '8px', padding: '12px', fontSize: '14px', fontWeight: 700, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                        <CreditCard size={16} /> {order.paymentMethod === 'QRIS' ? 'Konfirmasi Lunas' : 'Terima Tunai'}
+                      </button>
+                    </div>
                     
                   </div>
                 );

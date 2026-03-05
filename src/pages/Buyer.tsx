@@ -1,20 +1,18 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Info, Search, Store, Plus, Minus, CreditCard, Banknote, ShieldCheck, ChevronRight, ShoppingBag } from 'lucide-react';
-import { QRCodeSVG } from 'qrcode.react';
 import {
   getMenus,
   getTables,
   type MenuItem,
   type Table,
   type OrderItem,
-  generateOrderId,
   type PaymentMethod,
-  updateTableStatus,
   getOrders,
-  saveOrders,
   notifyDataUpdate,
-  listenToDataChanges
+  listenToDataChanges,
+  getDailyToken,
+  submitOrder
 } from '../store/dataManager';
 
 type Step = 'validating' | 'error' | 'menu' | 'cart' | 'success';
@@ -60,6 +58,13 @@ export default function Buyer() {
 
     if (t.status === 'Aktif/Unpaid') {
       setErrorMsg('Meja ini masih memiliki pesanan yang belum dibayar. Harap selesaikan pembayaran di kasir atau tunggu sebentar.');
+      setStep('error');
+      return;
+    }
+
+    const reqToken = searchParams.get('token');
+    if (reqToken !== getDailyToken()) {
+      setErrorMsg('Sesi tidak valid / Kadaluarsa. Harap scan ulang QR Code asli dari meja barusan.');
       setStep('error');
       return;
     }
@@ -111,32 +116,22 @@ export default function Buyer() {
   const handleProcessOrder = () => {
     if (!table || !paymentMethod) return;
 
-    // Generate TRX
-    const orderId = generateOrderId(table.number);
-
-    const newOrder = {
-      id: orderId,
-      tableId: table.id,
-      items: cart,
-      totalAmount: grandTotal,
-      status: 'Menunggu Pembayaran' as const,
-      paymentMethod,
-      createdAt: new Date().toISOString()
-    };
-
-    // Save Order
-    const orders = getOrders();
-    orders.push(newOrder);
-    saveOrders(orders);
-
-    // Update Table status
-    updateTableStatus(table.id, 'Aktif/Unpaid');
+    const token = searchParams.get('token') || '';
     
-    // Notify custom event across window to update Kasir UI
-    notifyDataUpdate();
+    try {
+      // Panggil fungsi submitOrder sebagai simulasi request ke backend
+      const result = submitOrder(table.id, cart, paymentMethod, token);
+      
+      // Notify custom event across window to update Kasir UI
+      notifyDataUpdate();
 
-    setTransactionInfo({ id: orderId, total: grandTotal, method: paymentMethod });
-    setStep('success');
+      setTransactionInfo({ id: result.orderId, total: result.grandTotal, method: paymentMethod });
+      setStep('success');
+    } catch (err: any) {
+      alert("Pesanan Gagal Diproses:\n\n" + err.message);
+      // Minta tabel diperiksa ulang statusnya dari server/storage terbaru
+      validateTable();
+    }
   };
 
   const filteredMenus = menus.filter(m => {
@@ -180,8 +175,6 @@ export default function Buyer() {
   }
 
   if (step === 'success' && transactionInfo) {
-    // We will generate a QR string using the orderId and amount for realism
-    const qrisData = `00020101021126570011ID.CO.QRIS.WWW0118936009131000000010206MANDIRI5204541153033605406${transactionInfo.total}5802ID5913WARKOP MODERN6007JAKARTA6105123456250070703A0163048D8E`;
     return (
       <div style={{ ...rootStyle, display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '40px 24px 60px', backgroundColor: '#ffffff' }}>
         <h2 style={{ fontSize: '24px', fontWeight: 800, marginBottom: '8px', color: '#0f172a', letterSpacing: '-0.5px' }}>Pesanan Berhasil!</h2>
@@ -201,10 +194,14 @@ export default function Buyer() {
              <p style={{ fontSize: '14px', color: '#64748b', lineHeight: 1.6 }}>Silakan menuju kasir dan sebutkan <b style={{ color: '#0f172a' }}>Nomor Transaksi</b> Anda untuk melakukan pembayaran tunai.</p>
           ) : (
              <>
-                <p style={{ fontSize: '14px', color: '#64748b', lineHeight: 1.6, marginBottom: '24px', padding: '0 8px' }}>Silakan scan kode QRIS di bawah ini dengan aplikasi M-Banking atau e-Wallet kesayangan Anda.</p>
-               <div style={{ width: '220px', height: '220px', backgroundColor: 'white', margin: '0 auto', display: 'flex', alignItems: 'center', justifyItems: 'center', justifyContent: 'center', borderRadius: '16px', border: '1px solid #e2e8f0', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.05)' }}>
-                  <QRCodeSVG value={qrisData} size={180} />
+               <p style={{ fontSize: '14px', color: '#64748b', lineHeight: 1.6, marginBottom: '24px', padding: '0 8px' }}>
+                 Silakan scan QRIS di bawah ini menggunakan M-Banking atau e-Wallet kesayangan Anda. Jika sudah berhasil, <b style={{ color: '#0f172a' }}>tunjukkan bukti transfer ke kasir</b> agar pesanan segera diproses.
+               </p>
+               <div style={{ width: '220px', height: '220px', backgroundColor: 'white', margin: '0 auto', display: 'flex', alignItems: 'center', justifyItems: 'center', justifyContent: 'center', borderRadius: '16px', border: '1px solid #e2e8f0', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.05)', overflow: 'hidden', padding: '12px' }}>
+                 {/* Menggunakan dummy placeholder untuk gambar QRIS statik warung */}
+                 <img src="https://upload.wikimedia.org/wikipedia/commons/d/d0/QR_code_for_mobile_English_Wikipedia.svg" alt="QRIS Warkop" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
                </div>
+               <p style={{ fontSize: '11px', color: '#94a3b8', marginTop: '16px', fontWeight: 600 }}>A/N WARKOP MODERN</p>
              </>
            )}
         </div>
@@ -239,9 +236,7 @@ export default function Buyer() {
         <div style={{ paddingBottom: '100px' }}>
           {/* Header */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px', backgroundColor: '#f8f9fa', position: 'sticky', top: 0, zIndex: 40 }}>
-            <button style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#ffffff', border: '1px solid #f3f4f6', width: '40px', height: '40px', borderRadius: '50%', boxShadow: '0 2px 4px rgba(0,0,0,0.02)', cursor: 'pointer' }} onClick={() => window.location.href = '/'}>
-              <ArrowLeft size={20} color="#111827" />
-            </button>
+            <div style={{ width: '40px' }}></div> {/* Spacer to keep header centered */}
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
               <span style={{ fontSize: '10px', fontWeight: 700, color: '#ea580c', letterSpacing: '1.5px', textTransform: 'uppercase' }}>WARKOP MODERN</span>
               <h1 style={{ fontSize: '18px', fontWeight: 700, margin: 0, color: '#111827' }}>Table {table?.number.toString().padStart(2, '0')}</h1>
