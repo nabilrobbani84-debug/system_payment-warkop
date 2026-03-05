@@ -78,13 +78,13 @@ const KEYS = {
 // 🔥 KONFIGURASI DATABASE ONLINE (FIREBASE REALTIME DATABASE) 🔥
 // Jika Anda mengisi variabel ini, web aplikasi Anda akan berubah otomatis menjadi aplikasi Live yang saling tersinkronisasi antar perangkat.
 const FIREBASE_CONFIG = {
-  apiKey: "", // misal: "AIzaSycxxxxxxxxxxxxxx"
-  authDomain: "", // misal: "warkop-app.firebaseapp.com"
-  databaseURL: "", // misal: "https://warkop-app-default-rtdb.asia-southeast1.firebasedatabase.app"
-  projectId: "", 
-  storageBucket: "",
-  messagingSenderId: "",
-  appId: ""
+  apiKey: "AIzaSyCBFNWa0ldE9R40UcHVVhYodlTUurXCnkw",
+  authDomain: "cloud-computing-22552.firebaseapp.com",
+  databaseURL: "https://cloud-computing-22552-default-rtdb.asia-southeast1.firebasedatabase.app", // URL Ini biasanya berlaku jika memilih server Singapura
+  projectId: "cloud-computing-22552", 
+  storageBucket: "cloud-computing-22552.firebasestorage.app",
+  messagingSenderId: "1077252898399",
+  appId: "1:1077252898399:web:1f3b54b389e5e52f6d65ea"
 };
 
 const isFirebaseActive = FIREBASE_CONFIG.apiKey.length > 5;
