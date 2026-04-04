@@ -5,60 +5,306 @@ import {
   getTables, 
   saveTables, 
   getOrders, 
+  saveOrders,
+  updateTableStatus,
+  syncToGoogleSheet,
+  listenToDataChanges,
   type MenuItem, 
   type Table, 
   type Order, 
   type MenuCategory,
-  listenToDataChanges,
   getSheetAppUrl,
   saveSheetAppUrl,
   getSheetPubUrl,
   saveSheetPubUrl,
-  getDailyToken
+  getDailyToken,
+  getQrisPayload,
+  saveQrisPayload,
+  logoutAdmin,
+  formatRupiah,
+  getTaxSettings,
+  saveTaxSettings,
+  getSecuritySettings,
+  saveSecuritySettings,
+  type TaxSettings,
+  type SecuritySettings,
+  getMenuCategories,
+  saveMenuCategories,
+  getVariantGroups,
+  saveVariantGroups,
+  type VariantGroup,
+  type VariantOption,
 } from '../store/dataManager';
-import { Settings, Plus, Edit, Trash2, Download, Table2, FileText, TrendingUp, QrCode, Calculator, Users, Clock, Home, PieChart, BarChart3, ArrowLeft } from 'lucide-react';
+import { Settings, Plus, Edit, Trash2, Table2, FileText, Users, Home, BarChart3, ArrowLeft, ShoppingBag, QrCode, ChevronRight, LogOut, Clock3, CreditCard, Link2, Database, BadgeCheck, History, ShieldCheck, UserCog, LockKeyhole, Percent, KeyRound } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import html2canvas from 'html2canvas';
 
-type Tab = 'dashboard' | 'menu' | 'table' | 'laporan';
+import AdminLogin from './AdminLogin';
+import { useFeedback } from '../components/feedback/useFeedback';
+
+type Tab = 'dashboard' | 'menu' | 'table' | 'laporan' | 'account';
+type AccountSection = 'home' | 'security' | 'tax' | 'category' | 'variant';
 
 export default function Admin() {
+  const feedback = useFeedback();
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => sessionStorage.getItem('warkop_admin_logged_in') === 'true');
+  
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
   
-  const [menus, setMenus] = useState<MenuItem[]>([]);
-  const [tables, setTables] = useState<Table[]>([]);
-  const [orders, setOrders] = useState<Order[]>([]);
+  const [menus, setMenus] = useState<MenuItem[]>(() => getMenus());
+  const [menuCategories, setMenuCategories] = useState<MenuCategory[]>(() => getMenuCategories());
+  const [variantGroups, setVariantGroups] = useState<VariantGroup[]>(() => getVariantGroups());
+  const [tables, setTables] = useState<Table[]>(() => getTables());
+  const [orders, setOrders] = useState<Order[]>(() => getOrders());
 
   const [isMenuModalOpen, setIsMenuModalOpen] = useState(false);
   const [editingMenu, setEditingMenu] = useState<MenuItem | null>(null);
 
   const [isSheetModalOpen, setIsSheetModalOpen] = useState(false);
-  const [sheetAppUrl, setSheetAppUrl] = useState('');
-  const [sheetPubUrl, setSheetPubUrl] = useState('');
+  const [sheetAppUrl, setSheetAppUrl] = useState(() => getSheetAppUrl());
+  const [sheetPubUrl, setSheetPubUrl] = useState(() => getSheetPubUrl());
+  const [qrisPayloadInput, setQrisPayloadInput] = useState(() => getQrisPayload());
+  const [taxSettings, setTaxSettings] = useState<TaxSettings>(() => getTaxSettings());
+  const [securitySettings, setSecuritySettings] = useState<SecuritySettings>(() => getSecuritySettings());
+  const [adminAllowlistInput, setAdminAllowlistInput] = useState(() => getSecuritySettings().adminAllowlist.join('\n'));
+  const [accountSection, setAccountSection] = useState<AccountSection>('home');
+  const [categoryNameInput, setCategoryNameInput] = useState('');
+  const [editingCategory, setEditingCategory] = useState<string | null>(null);
+  const [variantGroupDraft, setVariantGroupDraft] = useState({
+    name: '',
+    description: '',
+    visible: true,
+    appliesToCategories: [] as string[],
+  });
+  const [editingVariantGroupId, setEditingVariantGroupId] = useState<string | null>(null);
+  const [variantOptionDrafts, setVariantOptionDrafts] = useState<Record<string, { name: string; price: number; inStock: boolean }>>({});
+  const [selectedVariantGroupId, setSelectedVariantGroupId] = useState<string | null>(null);
+  const [ordersPage, setOrdersPage] = useState(1);
+  const [orderSearch, setOrderSearch] = useState('');
+  const [orderStatusFilter, setOrderStatusFilter] = useState<'Semua' | Order['status']>('Semua');
+  const [orderPaymentFilter, setOrderPaymentFilter] = useState<'Semua' | 'Cash' | 'QRIS'>('Semua');
+  const [orderStatusDrafts, setOrderStatusDrafts] = useState<Record<string, Order['status']>>(() =>
+    getOrders().reduce<Record<string, Order['status']>>((acc, order) => {
+      acc[order.id] = order.status;
+      return acc;
+    }, {})
+  );
+  const accountPageMeta: Record<AccountSection, { eyebrow: string; title: string; description: string }> = {
+    home: {
+      eyebrow: 'Account Settings',
+      title: 'Pusat kontrol dashboard',
+      description: 'Pilih halaman pengaturan yang ingin dibuka agar konfigurasi admin tetap rapi dan fokus.',
+    },
+    security: {
+      eyebrow: 'Keamanan',
+      title: 'Kontrol akses panel',
+      description: 'Kelola siapa yang boleh masuk ke admin dan apakah halaman kasir harus memakai PIN.',
+    },
+    tax: {
+      eyebrow: 'Pajak',
+      title: 'Konfigurasi pajak layanan',
+      description: 'Atur bagaimana pajak tampil di review pesanan dan detail transaksi buyer.',
+    },
+    category: {
+      eyebrow: 'Kategori',
+      title: 'Kategori menu utama',
+      description: 'Kelola kategori menu agar buyer lebih mudah memahami jenis makanan dan minuman.',
+    },
+    variant: {
+      eyebrow: 'Kategori Varian',
+      title: 'Varian per kategori menu',
+      description: 'Atur logika varian seperti hangat/es, level gula, topping, dan biaya tambahan.',
+    },
+  };
 
   const [tableToDelete, setTableToDelete] = useState<{id: string, number: number} | null>(null);
+  const selectedVariantGroup = selectedVariantGroupId ? variantGroups.find(group => group.id === selectedVariantGroupId) ?? null : null;
 
   const loadData = () => {
+    const nextOrders = getOrders();
     setMenus(getMenus());
+    setMenuCategories(getMenuCategories());
+    setVariantGroups(getVariantGroups());
     setTables(getTables());
-    setOrders(getOrders());
+    setOrders(nextOrders);
     setSheetAppUrl(getSheetAppUrl());
     setSheetPubUrl(getSheetPubUrl());
+    setQrisPayloadInput(getQrisPayload());
+    const loadedTaxSettings = getTaxSettings();
+    const loadedSecuritySettings = getSecuritySettings();
+    setTaxSettings(loadedTaxSettings);
+    setSecuritySettings(loadedSecuritySettings);
+    setAdminAllowlistInput(loadedSecuritySettings.adminAllowlist.join('\n'));
+    setOrderStatusDrafts(
+      nextOrders.reduce<Record<string, Order['status']>>((acc, order) => {
+        acc[order.id] = order.status;
+        return acc;
+      }, {})
+    );
   };
 
   useEffect(() => {
-    loadData();
-    const cleanup = listenToDataChanges(loadData);
-    return cleanup;
+    return listenToDataChanges(loadData);
   }, []);
+
+  const handleLogout = async () => {
+    const shouldLogout = await feedback.confirm({
+      title: 'Keluar dari panel admin?',
+      description: 'Sesi admin akan diakhiri dan Anda perlu login kembali untuk mengakses dashboard.',
+      confirmLabel: 'Ya, keluar',
+      cancelLabel: 'Tetap di sini',
+      variant: 'danger',
+    });
+    if (!shouldLogout) return;
+
+    await logoutAdmin();
+    sessionStorage.removeItem('warkop_admin_logged_in');
+    setIsAuthenticated(false);
+    feedback.toast({ title: 'Berhasil logout', description: 'Sesi admin sudah ditutup.', variant: 'success' });
+  };
 
   // Compute Dashboard Stats
   const completedOrders = orders.filter(o => o.status === 'Selesai' || o.status === 'Lunas/Diproses');
   const activeOrders = orders.filter(o => o.status === 'Menunggu Pembayaran');
+  
+  // Semua Waktu
   const totalRevenue = completedOrders.reduce((sum, o) => sum + o.totalAmount, 0);
-  const occupiedTables = tables.filter(t => t.status === 'Aktif/Unpaid');
+  const cashRevenue = completedOrders.filter(o => o.paymentMethod === 'Cash' || !o.paymentMethod).reduce((sum, o) => sum + o.totalAmount, 0);
+  const qrisRevenue = totalRevenue - cashRevenue; // Semua transfer (QRIS, DANA, GoPay, OVO, dll)
 
-  // Compute Monthly Revenue Chart Data (12 bulan terakhir)
+  // Hari Ini
+  const todayStr = new Date().toDateString();
+  const completedToday = completedOrders.filter(o => new Date(o.createdAt).toDateString() === todayStr);
+  const todayRevenue = completedToday.reduce((sum, o) => sum + o.totalAmount, 0);
+  const todayCash = completedToday.filter(o => o.paymentMethod === 'Cash' || !o.paymentMethod).reduce((sum, o) => sum + o.totalAmount, 0);
+  const todayQris = todayRevenue - todayCash;
+
+  const occupiedTables = tables.filter(t => t.status === 'Aktif/Unpaid');
+  const recentOrders = [...orders]
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    .slice(0, 5);
+  const paymentReadyCount = orders.filter(o => o.status === 'Lunas/Diproses').length;
+  const databaseSetupReady = Boolean(qrisPayloadInput || sheetAppUrl || sheetPubUrl);
+  const ordersPerPage = 8;
+  const filteredOrders = [...orders]
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    .filter(order => {
+      const search = orderSearch.trim().toLowerCase();
+      const matchesSearch = search.length === 0
+        || order.id.toLowerCase().includes(search)
+        || getTableLabel(order.tableId).toLowerCase().includes(search);
+      const matchesStatus = orderStatusFilter === 'Semua' || order.status === orderStatusFilter;
+      const matchesPayment = orderPaymentFilter === 'Semua' || (order.paymentMethod || 'Cash') === orderPaymentFilter;
+      return matchesSearch && matchesStatus && matchesPayment;
+    });
+  const totalOrderPages = Math.max(1, Math.ceil(filteredOrders.length / ordersPerPage));
+  const currentOrdersPage = Math.min(ordersPage, totalOrderPages);
+  const paginatedOrders = filteredOrders.slice((currentOrdersPage - 1) * ordersPerPage, currentOrdersPage * ordersPerPage);
+  const filteredRevenue = filteredOrders
+    .filter(order => order.status === 'Lunas/Diproses' || order.status === 'Selesai')
+    .reduce((sum, order) => sum + order.totalAmount, 0);
+
+  const getTableLabel = (tableId: string) => {
+    const table = tables.find(t => t.id === tableId);
+    return table ? `Meja ${table.number.toString().padStart(2, '0')}` : tableId;
+  };
+
+  const getOrderStatusColor = (status: Order['status']) => {
+    if (status === 'Menunggu Pembayaran') return { bg: '#fff7ed', text: '#c2410c' };
+    if (status === 'Lunas/Diproses') return { bg: '#eff6ff', text: '#1d4ed8' };
+    if (status === 'Selesai') return { bg: '#f0fdf4', text: '#15803d' };
+    return { bg: '#fef2f2', text: '#b91c1c' };
+  };
+
+  const getPaymentStyle = (paymentMethod?: Order['paymentMethod']) => {
+    if (paymentMethod === 'QRIS') return { bg: '#eff6ff', text: '#1d4ed8', label: 'QRIS' };
+    return { bg: '#f8fafc', text: '#475569', label: 'Cash' };
+  };
+
+  const formatOrderDate = (date: string) => new Date(date).toLocaleString('id-ID', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+
+  const handleAdminOrderStatusChange = async (orderId: string) => {
+    const targetStatus = orderStatusDrafts[orderId];
+    const currentOrder = orders.find(order => order.id === orderId);
+    if (!currentOrder || !targetStatus || currentOrder.status === targetStatus) return;
+
+    const shouldApply = await feedback.confirm({
+      title: 'Ubah status pembayaran?',
+      description: `Order ${orderId} akan diubah dari "${currentOrder.status}" menjadi "${targetStatus}".`,
+      confirmLabel: 'Simpan status',
+      cancelLabel: 'Batal',
+    });
+    if (!shouldApply) {
+      setOrderStatusDrafts(prev => ({ ...prev, [orderId]: currentOrder.status }));
+      return;
+    }
+
+    const updatedOrder: Order = {
+      ...currentOrder,
+      status: targetStatus,
+      completedAt: targetStatus === 'Lunas/Diproses' || targetStatus === 'Selesai'
+        ? currentOrder.completedAt || new Date().toISOString()
+        : currentOrder.completedAt,
+    };
+
+    const nextOrders = orders.map(order => order.id === orderId ? updatedOrder : order);
+    saveOrders(nextOrders);
+
+    if (targetStatus === 'Menunggu Pembayaran') {
+      updateTableStatus(currentOrder.tableId, 'Aktif/Unpaid');
+    } else {
+      updateTableStatus(currentOrder.tableId, 'Tersedia');
+    }
+
+    if (targetStatus === 'Lunas/Diproses' && currentOrder.status !== 'Lunas/Diproses') {
+      void syncToGoogleSheet(updatedOrder);
+    }
+
+    feedback.toast({
+      title: 'Status order diperbarui',
+      description: `${orderId} sekarang berstatus ${targetStatus}.`,
+      variant: 'success',
+    });
+  };
+
+  const handleDeleteOrder = async (orderId: string) => {
+    const currentOrder = orders.find(order => order.id === orderId);
+    if (!currentOrder) return;
+
+    const shouldDelete = await feedback.confirm({
+      title: 'Hapus order ini?',
+      description: `Order ${orderId} akan dihapus permanen dari riwayat transaksi admin.`,
+      confirmLabel: 'Hapus order',
+      cancelLabel: 'Batal',
+      variant: 'danger',
+    });
+    if (!shouldDelete) return;
+
+    const nextOrders = orders.filter(order => order.id !== orderId);
+    saveOrders(nextOrders);
+    setOrderStatusDrafts(prev => {
+      const nextDrafts = { ...prev };
+      delete nextDrafts[orderId];
+      return nextDrafts;
+    });
+
+    const tableStillActive = nextOrders.some(order => order.tableId === currentOrder.tableId && order.status === 'Menunggu Pembayaran');
+    updateTableStatus(currentOrder.tableId, tableStillActive ? 'Aktif/Unpaid' : 'Tersedia');
+
+    feedback.toast({
+      title: 'Order berhasil dihapus',
+      description: `${orderId} sudah dihapus dari Firestore.`,
+      variant: 'success',
+    });
+  };
+
+  // Compute Monthly Revenue Chart Data
   const monthlyRevenue = (() => {
     const now = new Date();
     const months: { label: string; value: number; month: number; year: number }[] = [];
@@ -90,7 +336,7 @@ export default function Admin() {
       price: parseInt(formData.get('price') as string, 10),
       category: formData.get('category') as MenuCategory,
       available: formData.get('available') === 'on',
-      // Using a placeholder image if not provided for simplicity
+      description: formData.get('description') as string || '',
       image: formData.get('image') as string || 'https://images.unsplash.com/photo-1541167760496-1628856ab772?auto=format&fit=crop&q=80&w=400'
     };
 
@@ -102,19 +348,24 @@ export default function Admin() {
     }
     
     saveMenus(updatedMenus);
-    setMenus(updatedMenus);
     setIsMenuModalOpen(false);
     setEditingMenu(null);
   };
 
-  const handleDeleteMenu = (id: string) => {
-    if (!confirm('Yakin hapus menu ini?')) return;
+  const handleDeleteMenu = async (id: string) => {
+    const shouldDelete = await feedback.confirm({
+      title: 'Hapus menu ini?',
+      description: 'Menu yang dihapus akan hilang dari daftar buyer dan kasir.',
+      confirmLabel: 'Hapus menu',
+      cancelLabel: 'Batal',
+      variant: 'danger',
+    });
+    if (!shouldDelete) return;
     const updated = menus.filter(m => m.id !== id);
     saveMenus(updated);
-    setMenus(updated);
+    feedback.toast({ title: 'Menu dihapus', description: 'Perubahan sudah disimpan ke Firestore.', variant: 'success' });
   };
 
-  // Table Management
   const handleAddTable = () => {
     const nextNum = tables.length > 0 ? Math.max(...tables.map(t => t.number)) + 1 : 1;
     const newTable: Table = {
@@ -124,26 +375,23 @@ export default function Admin() {
     };
     const updated = [...tables, newTable];
     saveTables(updated);
-    setTables(updated);
-    
-    // User feedback so they know the table was added
-    alert(`Meja ${nextNum.toString().padStart(2, '0')} berhasil ditambahkan!`);
-    
-    // Auto scroll to the very bottom to show the newly added table
-    setTimeout(() => {
-      window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
-    }, 50);
+    feedback.toast({
+      title: 'Meja berhasil ditambahkan',
+      description: `Meja ${nextNum.toString().padStart(2, '0')} sudah aktif di sistem.`,
+      variant: 'success',
+    });
   };
 
-  const confirmDeleteTable = (id: string, number: number) => {
-    // Jangan izinkan hapus jika ada pesanan belum lunas
+  const confirmDeleteTable = async (id: string, number: number) => {
     const isActive = orders.some(o => o.tableId === id && o.status === 'Menunggu Pembayaran');
     if (isActive) {
-      alert(`Meja ${number} sedang aktif / ada pesanan belum dibayar. Selesaikan dulu di Kasir.`);
+      await feedback.alert({
+        title: 'Meja tidak bisa dihapus',
+        description: `Meja ${number} sedang aktif atau masih memiliki pesanan yang belum dibayar.`,
+        buttonLabel: 'Mengerti',
+      });
       return;
     }
-
-    // Tampilkan custom confirmation modal
     setTableToDelete({ id, number });
   };
 
@@ -151,115 +399,206 @@ export default function Admin() {
     if (!tableToDelete) return;
     const updated = tables.filter(t => t.id !== tableToDelete.id);
     saveTables(updated);
-    setTables(updated);
+    feedback.toast({
+      title: 'Meja dihapus',
+      description: `Meja ${tableToDelete.number.toString().padStart(2, '0')} sudah dihapus dari sistem.`,
+      variant: 'success',
+    });
     setTableToDelete(null);
   };
 
   const handleDownloadQR = async (tableNum: number) => {
     const qrElement = document.getElementById(`qr-meja-${tableNum}`);
     if (!qrElement) return;
-
     try {
-      // Tunggu sebentar untuk memastikan render SVG selesai
       await new Promise(resolve => setTimeout(resolve, 100));
-      
-      const canvas = await html2canvas(qrElement, {
-        backgroundColor: '#ffffff',
-        scale: 2 // Resolusi tinggi
-      });
-      
+      const canvas = await html2canvas(qrElement, { backgroundColor: '#ffffff', scale: 2 });
       const link = document.createElement('a');
       link.download = `QR-Meja-${tableNum.toString().padStart(2, '0')}.png`;
       link.href = canvas.toDataURL('image/png');
-      document.body.appendChild(link); // Penting untuk beberapa browser
       link.click();
-      document.body.removeChild(link);
     } catch (err) {
-      console.error('Gagal mendownload QR:', err);
-      alert('Gagal mengekspor gambar QR.');
+      void err;
+      feedback.toast({ title: 'Gagal mengekspor QR', description: 'Silakan coba lagi beberapa saat.', variant: 'error' });
     }
   };
 
-  const handleDownloadPDF = () => {
-    if (!sheetPubUrl) {
-      alert("Silakan atur URL Spreadsheet terlebih dahulu (Klik ikon Setting di section Laporan).");
-      setIsSheetModalOpen(true);
+  const handleSaveConfig = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    saveSheetAppUrl(sheetAppUrl);
+    saveSheetPubUrl(sheetPubUrl);
+    saveQrisPayload(qrisPayloadInput);
+    setIsSheetModalOpen(false);
+    feedback.toast({
+      title: 'Konfigurasi disimpan',
+      description: 'Pengaturan pembayaran dan integrasi sudah diperbarui.',
+      variant: 'success',
+    });
+  };
+
+  const handleSaveAccountSettings = () => {
+    const parsedAllowlist = adminAllowlistInput
+      .split(/\r?\n|,/)
+      .map(item => item.trim().toLowerCase())
+      .filter(Boolean);
+
+    saveSecuritySettings({
+      ...securitySettings,
+      adminAllowlist: parsedAllowlist,
+    });
+    saveTaxSettings(taxSettings);
+
+    feedback.toast({
+      title: 'Pengaturan akun disimpan',
+      description: 'Akses admin, keamanan kasir, dan pajak sudah diperbarui di Firestore.',
+      variant: 'success',
+    });
+  };
+
+  const handleSaveCategory = async () => {
+    const nextCategory = categoryNameInput.trim();
+    if (!nextCategory) {
+      feedback.toast({ title: 'Kategori belum diisi', description: 'Masukkan nama kategori terlebih dahulu.', variant: 'error' });
       return;
     }
-    
-    let pdfUrl = sheetPubUrl;
-    if (pdfUrl.includes('/edit')) {
-      pdfUrl = pdfUrl.replace(/\/edit.*$/, '/export?format=pdf');
-    }
-    window.open(pdfUrl, '_blank');
-  };
 
-  const handleSaveSheetConfig = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const formData = new FormData(e.currentTarget);
-    const appUrl = (formData.get('appUrl') as string).trim();
-    const pubUrl = (formData.get('pubUrl') as string).trim();
-    
-    saveSheetAppUrl(appUrl);
-    saveSheetPubUrl(pubUrl);
-    setSheetAppUrl(appUrl);
-    setSheetPubUrl(pubUrl);
-    setIsSheetModalOpen(false);
-    alert('Konfigurasi Google Sheet berhasil disimpan!');
-  };
-
-  // Computations for Laporan Omzet
-  const totalTransaksi = completedOrders.length;
-  
-  // Calculate Metode Utama
-  const methodCounts = completedOrders.reduce((acc, order) => {
-    const method = order.paymentMethod || 'Cash';
-    acc[method] = (acc[method] || 0) + 1;
-    return acc;
-  }, {} as Record<string, number>);
-  const metodeUtama = Object.keys(methodCounts).length > 0 
-    ? Object.keys(methodCounts).reduce((a, b) => methodCounts[a] > methodCounts[b] ? a : b) 
-    : '-';
-  const metodeUtamaVolume = totalTransaksi > 0 && metodeUtama !== '-'
-    ? Math.round((methodCounts[metodeUtama] / totalTransaksi) * 100)
-    : 0;
-
-  // Category Revenue
-  const categoryRevenue = { COFFEE: 0, FOOD: 0, SNACKS: 0 };
-  const menuSales: Record<string, { qty: number, revenue: number, name: string, category: string, id: string }> = {};
-
-  completedOrders.forEach(order => {
-    order.items.forEach(item => {
-      const menu = menus.find(m => m.id === item.menuId);
-      if (menu) {
-        let cat = 'SNACKS';
-        if (menu.category === 'Minuman') cat = 'COFFEE';
-        else if (menu.category === 'Makanan') cat = 'FOOD';
-
-        const rev = item.quantity * menu.price;
-        categoryRevenue[cat as keyof typeof categoryRevenue] += rev;
-
-        if (!menuSales[menu.id]) {
-          menuSales[menu.id] = { qty: 0, revenue: 0, name: menu.name, category: cat, id: menu.id };
-        }
-        menuSales[menu.id].qty += item.quantity;
-        menuSales[menu.id].revenue += rev;
+    if (editingCategory) {
+      const updatedMenus = menus.map(menu => menu.category === editingCategory ? { ...menu, category: nextCategory } : menu);
+      saveMenus(updatedMenus);
+      saveMenuCategories(menuCategories.map(category => category === editingCategory ? nextCategory : category));
+      feedback.toast({ title: 'Kategori diperbarui', description: `Kategori ${editingCategory} diganti menjadi ${nextCategory}.`, variant: 'success' });
+    } else {
+      if (menuCategories.some(category => category.toLowerCase() === nextCategory.toLowerCase())) {
+        feedback.toast({ title: 'Kategori sudah ada', description: 'Gunakan nama kategori yang berbeda.', variant: 'error' });
+        return;
       }
-    });
-  });
+      saveMenuCategories([...menuCategories, nextCategory]);
+      feedback.toast({ title: 'Kategori ditambahkan', description: `${nextCategory} siap dipakai di buyer dan kasir.`, variant: 'success' });
+    }
 
-  const topMenus = Object.values(menuSales)
-    .sort((a, b) => b.qty - a.qty)
-    .slice(0, 5);
-  const maxMenuQty = topMenus.length > 0 ? topMenus[0].qty : 1;
-
-  const formatCompact = (value: number) => {
-    if (value >= 1000000) return (value / 1000000).toFixed(1).replace('.0', '') + 'M';
-    if (value >= 1000) return (value / 1000).toFixed(0) + 'rb';
-    return value.toString();
+    setCategoryNameInput('');
+    setEditingCategory(null);
   };
 
-  // Inline styling for the wrapper to force the mobile light theme from the screenshot
+  const handleDeleteCategory = async (categoryName: string) => {
+    const usedCount = menus.filter(menu => menu.category === categoryName).length;
+    if (usedCount > 0) {
+      await feedback.alert({
+        title: 'Kategori tidak bisa dihapus',
+        description: `${categoryName} masih dipakai oleh ${usedCount} menu. Ganti kategori pada menu terkait dulu.`,
+        buttonLabel: 'Mengerti',
+      });
+      return;
+    }
+
+    const shouldDelete = await feedback.confirm({
+      title: 'Hapus kategori ini?',
+      description: `Kategori ${categoryName} akan dihapus dari pilihan kategori.`,
+      confirmLabel: 'Hapus',
+      cancelLabel: 'Batal',
+      variant: 'danger',
+    });
+    if (!shouldDelete) return;
+
+    saveMenuCategories(menuCategories.filter(category => category !== categoryName));
+    if (editingCategory === categoryName) {
+      setEditingCategory(null);
+      setCategoryNameInput('');
+    }
+    feedback.toast({ title: 'Kategori dihapus', description: `${categoryName} berhasil dihapus.`, variant: 'success' });
+  };
+
+  const resetVariantGroupDraft = () => {
+    setVariantGroupDraft({ name: '', description: '', visible: true, appliesToCategories: [] });
+    setEditingVariantGroupId(null);
+  };
+
+  const handleSaveVariantGroup = () => {
+    const normalizedName = variantGroupDraft.name.trim();
+    if (!normalizedName) {
+      feedback.toast({ title: 'Nama kategori varian wajib diisi', description: 'Isi nama kategori varian terlebih dahulu.', variant: 'error' });
+      return;
+    }
+
+    if (variantGroupDraft.appliesToCategories.length === 0) {
+      feedback.toast({ title: 'Kategori menu belum dipilih', description: 'Pilih minimal satu kategori menu yang akan memakai varian ini.', variant: 'error' });
+      return;
+    }
+
+    if (editingVariantGroupId) {
+      saveVariantGroups(variantGroups.map(group => group.id === editingVariantGroupId ? {
+        ...group,
+        name: normalizedName,
+        description: variantGroupDraft.description.trim(),
+        visible: variantGroupDraft.visible,
+        appliesToCategories: variantGroupDraft.appliesToCategories,
+      } : group));
+      feedback.toast({ title: 'Kategori varian diperbarui', description: `${normalizedName} berhasil disimpan.`, variant: 'success' });
+    } else {
+      const nextGroup: VariantGroup = {
+        id: `vg-${Date.now()}`,
+        name: normalizedName,
+        description: variantGroupDraft.description.trim(),
+        visible: variantGroupDraft.visible,
+        appliesToCategories: variantGroupDraft.appliesToCategories,
+        options: [],
+      };
+      saveVariantGroups([...variantGroups, nextGroup]);
+      setSelectedVariantGroupId(nextGroup.id);
+      feedback.toast({ title: 'Kategori varian ditambahkan', description: `${normalizedName} siap dipakai di buyer.`, variant: 'success' });
+    }
+
+    resetVariantGroupDraft();
+  };
+
+  const handleDeleteVariantGroup = async (groupId: string) => {
+    const group = variantGroups.find(item => item.id === groupId);
+    if (!group) return;
+
+    const shouldDelete = await feedback.confirm({
+      title: 'Hapus kategori varian ini?',
+      description: `${group.name} beserta semua variannya akan dihapus.`,
+      confirmLabel: 'Hapus',
+      cancelLabel: 'Batal',
+      variant: 'danger',
+    });
+    if (!shouldDelete) return;
+
+    saveVariantGroups(variantGroups.filter(item => item.id !== groupId));
+    if (selectedVariantGroupId === groupId) {
+      setSelectedVariantGroupId(null);
+    }
+    resetVariantGroupDraft();
+    feedback.toast({ title: 'Kategori varian dihapus', description: `${group.name} berhasil dihapus.`, variant: 'success' });
+  };
+
+  const handleSaveVariantOption = (groupId: string) => {
+    const draft = variantOptionDrafts[groupId];
+    if (!draft || !draft.name.trim()) {
+      feedback.toast({ title: 'Nama varian wajib diisi', description: 'Isi nama varian sebelum menyimpan.', variant: 'error' });
+      return;
+    }
+
+    const nextGroups = variantGroups.map(group => {
+      if (group.id !== groupId) return group;
+      const nextOption: VariantOption = {
+        id: `vo-${Date.now()}`,
+        name: draft.name.trim(),
+        price: Number.isFinite(draft.price) ? Math.max(0, draft.price) : 0,
+        inStock: draft.inStock,
+      };
+      return { ...group, options: [...group.options, nextOption] };
+    });
+
+    saveVariantGroups(nextGroups);
+    setVariantOptionDrafts(prev => ({ ...prev, [groupId]: { name: '', price: 0, inStock: true } }));
+    feedback.toast({ title: 'Varian ditambahkan', description: 'Varian baru berhasil masuk ke kategori varian.', variant: 'success' });
+  };
+
+  const handleDeleteVariantOption = (groupId: string, optionId: string) => {
+    saveVariantGroups(variantGroups.map(group => group.id === groupId ? { ...group, options: group.options.filter(option => option.id !== optionId) } : group));
+  };
+
   const wrapperStyle = {
     backgroundColor: '#f8f9fa',
     color: '#0f172a',
@@ -267,477 +606,1146 @@ export default function Admin() {
     fontFamily: "'Inter', sans-serif"
   };
 
+  if (!isAuthenticated) {
+    return (
+      <AdminLogin onSuccess={() => {
+        sessionStorage.setItem('warkop_admin_logged_in', 'true');
+        setIsAuthenticated(true);
+      }} />
+    );
+  }
+
   return (
     <div style={wrapperStyle} className="flex justify-center pb-20">
       <div className="w-full max-w-md bg-[#f8f9fa] min-h-screen relative shadow-2xl">
         
         {/* Header */}
-        {activeTab === 'laporan' ? (
-          <div style={{ padding: '24px 20px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#f8f9fa', position: 'sticky', top: 0, zIndex: 40 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-              <ArrowLeft size={24} color="#0f172a" onClick={() => setActiveTab('dashboard')} style={{ cursor: 'pointer' }} />
-              <h1 style={{ fontSize: '18px', fontWeight: 700, margin: 0, color: '#0f172a' }}>Laporan Omzet</h1>
+        <div style={{ padding: '24px 20px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#f8f9fa', position: 'sticky', top: 0, zIndex: 40 }}>
+            {activeTab === 'dashboard' ? (
+                <div>
+                  <h1 style={{ fontSize: '24px', fontWeight: 800, margin: 0, color: '#0f172a', letterSpacing: '-0.5px' }}>Dashboard Admin</h1>
+                  <p style={{ fontSize: '13px', color: '#64748b', margin: '4px 0 0 0', fontWeight: 600 }}>Halo, selamat datang kembali!</p>
+                </div>
+            ) : (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <ArrowLeft size={24} onClick={() => setActiveTab('dashboard')} style={{ cursor: 'pointer' }} />
+                  <h1 style={{ fontSize: '18px', fontWeight: 800, margin: 0, color: '#0f172a' }}>
+                    {activeTab === 'laporan' ? 'RIWAYAT ORDERS' : activeTab === 'account' ? 'ACCOUNT & PROFILE' : activeTab.toUpperCase()}
+                  </h1>
+                </div>
+            )}
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <div onClick={handleLogout} style={{ width: '40px', height: '40px', borderRadius: '12px', backgroundColor: '#fef2f2', border: '1px solid #fee2e2', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', boxShadow: '0 2px 4px rgba(0,0,0,0.02)' }} title="Keluar">
+                <LogOut size={18} color="#ef4444" />
+              </div>
+              <div onClick={() => setIsSheetModalOpen(true)} style={{ width: '40px', height: '40px', borderRadius: '12px', backgroundColor: '#ffffff', border: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', boxShadow: '0 2px 4px rgba(0,0,0,0.02)' }} title="Pengaturan">
+                <Settings size={20} color="#64748b" />
+              </div>
             </div>
-            <button onClick={handleDownloadPDF} style={{ backgroundColor: '#ea580c', color: 'white', border: 'none', borderRadius: '8px', padding: '8px 16px', fontSize: '13px', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', boxShadow: '0 4px 6px rgba(234, 88, 12, 0.2)' }}>
-              <Download size={14} /> PDF
-            </button>
-          </div>
-        ) : (
-          <div style={{ padding: '24px 20px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#f8f9fa', position: 'sticky', top: 0, zIndex: 40 }}>
-            <div>
-              <h1 style={{ fontSize: '24px', fontWeight: 800, margin: 0, color: '#0f172a', letterSpacing: '-0.5px' }}>Halo, Admin!</h1>
-              <p style={{ fontSize: '13px', color: '#64748b', margin: '4px 0 0 0', fontWeight: 500 }}>
-                {new Date().toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'short', day: 'numeric' })}
-              </p>
-            </div>
-            <div style={{ width: '40px', height: '40px', borderRadius: '50%', backgroundColor: '#ffedd5', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '2px solid #fdba74' }}>
-              <Users size={20} color="#ea580c" />
-            </div>
-          </div>
-        )}
+        </div>
 
         <div style={{ padding: '0 20px 100px' }}>
           
-          {/* Main Content Area Based on Tabs */}
           {activeTab === 'dashboard' && (
             <div className="animate-fade-in">
-              <h2 style={{ fontSize: '16px', fontWeight: 700, margin: '16px 0', color: '#0f172a', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <PieChart size={18} color="#ea580c" /> Status Warung Saat Ini
-              </h2>
-
-              {/* Main Revenue Card */}
-              <div style={{ backgroundColor: '#e27515', borderRadius: '20px', padding: '24px', color: 'white', marginBottom: '16px', boxShadow: '0 10px 25px -5px rgba(234, 88, 12, 0.4)' }}>
-                <p style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px', opacity: 0.9, marginBottom: '8px' }}>Omzet Hari Ini</p>
-                <div style={{ display: 'flex', alignItems: 'flex-start', gap: '4px', marginBottom: '16px' }}>
-                  <span style={{ fontSize: '18px', fontWeight: 700, marginTop: '8px' }}>Rp</span>
-                  <span style={{ fontSize: '40px', fontWeight: 800, letterSpacing: '-1px' }}>{totalRevenue.toLocaleString('id-ID')}</span>
-                </div>
-                <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', backgroundColor: 'rgba(255,255,255,0.2)', padding: '6px 12px', borderRadius: '20px', fontSize: '11px', fontWeight: 600 }}>
-                  <TrendingUp size={12} /> +8.2% dari target
-                </div>
+              {/* Revenue Card Card */}
+              <div style={{ backgroundColor: '#0f172a', borderRadius: '24px', padding: '24px', color: 'white', marginBottom: '8px', boxShadow: '0 10px 30px -5px rgba(15, 23, 42, 0.4)', position: 'relative', overflow: 'hidden' }}>
+                 <div style={{ position: 'absolute', top: '-10px', right: '-10px', width: '100px', height: '100px', backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: '50%' }}></div>
+                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                     <div>
+                         <p style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1px', color: '#38bdf8', marginBottom: '8px' }}>Omzet Hari Ini</p>
+                         <h2 style={{ fontSize: '28px', fontWeight: 800, letterSpacing: '-1px', margin: '0 0 20px', color: '#ffffff' }}>Rp {formatRupiah(todayRevenue)}</h2>
+                     </div>
+                 </div>
+                 
+                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                    <div style={{ backgroundColor: 'rgba(56, 189, 248, 0.1)', border: '1px solid rgba(56, 189, 248, 0.2)', padding: '12px', borderRadius: '16px' }}>
+                        <p style={{ fontSize: '10px', opacity: 0.9, marginBottom: '4px', color: '#bae6fd', fontWeight: 600 }}>💳 E-WALLET / QRIS</p>
+                        <p style={{ fontSize: '15px', fontWeight: 700 }}>Rp {formatRupiah(todayQris)}</p>
+                    </div>
+                    <div style={{ backgroundColor: 'rgba(255,255,255,0.1)', padding: '12px', borderRadius: '16px' }}>
+                        <p style={{ fontSize: '10px', opacity: 0.7, marginBottom: '4px' }}>💵 CASH</p>
+                        <p style={{ fontSize: '15px', fontWeight: 700 }}>Rp {formatRupiah(todayCash)}</p>
+                    </div>
+                 </div>
               </div>
+
+              {/* All Time Revenue (Collapsed/Minimal) */}
+              <div style={{ backgroundColor: '#1e293b', borderRadius: '16px', padding: '16px 20px', color: 'white', marginBottom: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                 <div>
+                    <p style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 600, textTransform: 'uppercase', marginBottom: '2px' }}>Total Keseluruhan (All-Time)</p>
+                    <p style={{ fontSize: '14px', fontWeight: 700, margin: 0, color: '#f1f5f9' }}>Rp {formatRupiah(totalRevenue)}</p>
+                 </div>
+                 <div style={{ textAlign: 'right' }}>
+                    <p style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 600, textTransform: 'uppercase', marginBottom: '2px' }}>Total via QRIS</p>
+                    <p style={{ fontSize: '14px', fontWeight: 700, margin: 0, color: '#38bdf8' }}>Rp {formatRupiah(qrisRevenue)}</p>
+                 </div>
+              </div>
+
+              {/* QRIS Setup Alert if empty */}
+              {!qrisPayloadInput && (
+                <div onClick={() => setIsSheetModalOpen(true)} style={{ backgroundColor: '#fff7ed', border: '1px solid #fdba74', padding: '16px', borderRadius: '16px', marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '12px', cursor: 'pointer' }}>
+                   <div style={{ backgroundColor: '#ea580c', width: '40px', height: '40px', borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <QrCode size={20} color="white" />
+                   </div>
+                   <div style={{ flex: 1 }}>
+                      <p style={{ fontSize: '13px', fontWeight: 700, color: '#9a3412', margin: 0 }}>QRIS Belum Disetup</p>
+                      <p style={{ fontSize: '11px', color: '#ea580c', margin: '2px 0 0' }}>Klik di sini untuk isi payload QRIS warung Anda.</p>
+                   </div>
+                   <ChevronRight size={16} color="#ea580c" />
+                </div>
+              )}
 
               {/* Stats Grid */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '32px' }}>
-                <div style={{ backgroundColor: 'white', borderRadius: '20px', padding: '20px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.02)', border: '1px solid #f1f5f9' }}>
-                  <p style={{ fontSize: '11px', fontWeight: 700, color: '#94a3b8', letterSpacing: '0.5px', marginBottom: '8px' }}>MEJA TERISI</p>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span style={{ fontSize: '24px', fontWeight: 800, color: '#0f172a' }}>{occupiedTables.length}/{tables.length}</span>
-                    {tables.length > 0 && (
-                       <span style={{ backgroundColor: '#ffedd5', color: '#ea580c', fontSize: '10px', fontWeight: 700, padding: '4px 6px', borderRadius: '6px' }}>
-                         {Math.round((occupiedTables.length / tables.length) * 100)}%
-                       </span>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '24px' }}>
+                <div style={{ backgroundColor: 'white', borderRadius: '20px', padding: '16px', border: '1px solid #f1f5f9' }}>
+                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
+                      <Users size={18} color="#ea580c" />
+                      <span style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 700 }}>TABLES</span>
+                   </div>
+                   <h3 style={{ fontSize: '24px', fontWeight: 800, color: '#0f172a', margin: 0 }}>{occupiedTables.length}/{tables.length}</h3>
+                   <p style={{ fontSize: '10px', color: '#16a34a', fontWeight: 700, marginTop: '4px' }}>● Live status</p>
+                </div>
+                <div style={{ backgroundColor: 'white', borderRadius: '20px', padding: '16px', border: '1px solid #f1f5f9' }}>
+                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
+                      <ShoppingBag size={18} color="#3b82f6" />
+                      <span style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 700 }}>ORDERS</span>
+                   </div>
+                   <h3 style={{ fontSize: '24px', fontWeight: 800, color: '#0f172a', margin: 0 }}>{activeOrders.length}</h3>
+                   <p style={{ fontSize: '10px', color: '#3b82f6', fontWeight: 700, marginTop: '4px' }}>Menunggu Bayar</p>
+                </div>
+              </div>
+
+              {/* Chart Placeholder / Laporan Short */}
+              <div style={{ backgroundColor: 'white', borderRadius: '24px', padding: '24px', border: '1px solid #f1f5f9', marginBottom: '24px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                    <h3 style={{ fontSize: '16px', fontWeight: 700, color: '#0f172a', margin: 0 }}>Pemasukan Bulanan</h3>
+                    <BarChart3 size={18} color="#94a3b8" />
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'flex-end', gap: '8px', height: '100px', marginBottom: '8px' }}>
+                      {monthlyRevenue.slice(-7).map((m, i) => (
+                        <div key={i} style={{ flex: 1, backgroundColor: i === 6 ? '#ea580c' : '#f1f5f9', borderRadius: '4px', height: `${(m.value / (maxMonthlyRevenue || 1)) * 100}%`, minHeight: '4px' }}></div>
+                      ))}
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', padding: '0 4px' }}>
+                      {monthlyRevenue.slice(-7).map((m, i) => (
+                        <span key={i} style={{ fontSize: '9px', fontWeight: 700, color: '#94a3b8' }}>{m.label}</span>
+                      ))}
+                  </div>
+              </div>
+
+              {/* Quick Navigation Cards */}
+               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                  <div onClick={() => setActiveTab('menu')} style={{ backgroundColor: 'white', padding: '20px', borderRadius: '20px', border: '1px solid #f1f5f9', cursor: 'pointer' }}>
+                     <FileText size={24} color="#ea580c" style={{ marginBottom: '12px' }} />
+                     <h4 style={{ fontSize: '15px', fontWeight: 700, color: '#0f172a', margin: '0 0 4px' }}>Menu</h4>
+                     <p style={{ fontSize: '11px', color: '#64748b' }}>Kelola daftar makanan & minuman</p>
+                  </div>
+                  <div onClick={() => setActiveTab('table')} style={{ backgroundColor: 'white', padding: '20px', borderRadius: '20px', border: '1px solid #f1f5f9', cursor: 'pointer' }}>
+                     <Table2 size={24} color="#3b82f6" style={{ marginBottom: '12px' }} />
+                     <h4 style={{ fontSize: '15px', fontWeight: 700, color: '#0f172a', margin: '0 0 4px' }}>Meja</h4>
+                     <p style={{ fontSize: '11px', color: '#64748b' }}>Setup meja & download QR Code</p>
+                  </div>
+               </div>
+
+               <div style={{ backgroundColor: 'white', borderRadius: '24px', padding: '24px', border: '1px solid #f1f5f9', marginTop: '24px', marginBottom: '20px' }}>
+                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                   <div>
+                     <h3 style={{ fontSize: '16px', fontWeight: 700, color: '#0f172a', margin: 0 }}>Order Terbaru</h3>
+                     <p style={{ fontSize: '12px', color: '#64748b', margin: '4px 0 0' }}>Data live dari Firestore</p>
+                   </div>
+                   <button onClick={() => setActiveTab('laporan')} style={{ border: 'none', backgroundColor: '#fff7ed', color: '#ea580c', fontWeight: 700, borderRadius: '12px', padding: '10px 14px', cursor: 'pointer' }}>
+                     Lihat Semua
+                   </button>
+                 </div>
+                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                   {recentOrders.length > 0 ? recentOrders.map(order => {
+                     const statusColor = getOrderStatusColor(order.status);
+                     const paymentStyle = getPaymentStyle(order.paymentMethod);
+                     return (
+                       <div key={order.id} style={{ padding: '16px', borderRadius: '18px', border: '1px solid #e2e8f0', backgroundColor: '#ffffff', boxShadow: '0 8px 20px rgba(15, 23, 42, 0.04)' }}>
+                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px', marginBottom: '14px' }}>
+                           <div style={{ minWidth: 0, flex: 1 }}>
+                             <p style={{ fontSize: '14px', fontWeight: 800, color: '#0f172a', margin: 0 }}>{order.id}</p>
+                             <p style={{ fontSize: '12px', color: '#64748b', margin: '6px 0 0' }}>{formatOrderDate(order.createdAt)}</p>
+                           </div>
+                           <span style={{ fontSize: '11px', fontWeight: 800, padding: '6px 10px', borderRadius: '999px', backgroundColor: statusColor.bg, color: statusColor.text }}>
+                             {order.status}
+                           </span>
+                         </div>
+                         <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '12px', alignItems: 'center' }}>
+                           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                               <span style={{ fontSize: '11px', fontWeight: 800, padding: '6px 10px', borderRadius: '999px', backgroundColor: '#f8fafc', color: '#334155' }}>
+                                 {getTableLabel(order.tableId)}
+                               </span>
+                               <span style={{ fontSize: '11px', fontWeight: 800, padding: '6px 10px', borderRadius: '999px', backgroundColor: paymentStyle.bg, color: paymentStyle.text }}>
+                                 {paymentStyle.label}
+                               </span>
+                             </div>
+                             <p style={{ fontSize: '11px', color: '#94a3b8', margin: 0 }}>Transaksi terbaru tersinkron langsung dari Firestore.</p>
+                           </div>
+                           <div style={{ textAlign: 'right' }}>
+                             <p style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase', margin: '0 0 6px' }}>Total</p>
+                             <span style={{ fontSize: '16px', color: '#0f172a', fontWeight: 800 }}>Rp {formatRupiah(order.totalAmount)}</span>
+                           </div>
+                         </div>
+                       </div>
+                     );
+                   }) : (
+                     <div style={{ padding: '20px', borderRadius: '16px', backgroundColor: '#f8fafc', color: '#64748b', textAlign: 'center', fontSize: '13px', fontWeight: 600 }}>
+                       Belum ada order yang masuk ke Firestore.
+                     </div>
+                   )}
+                 </div>
+               </div>
+
+               <div style={{ backgroundColor: '#0f172a', borderRadius: '24px', padding: '24px', color: 'white' }}>
+                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '18px' }}>
+                   <div>
+                     <p style={{ fontSize: '11px', letterSpacing: '1px', textTransform: 'uppercase', color: '#38bdf8', fontWeight: 700, margin: 0 }}>Konfigurasi Database</p>
+                     <h3 style={{ fontSize: '20px', fontWeight: 800, margin: '6px 0 0' }}>Firestore Aktif</h3>
+                   </div>
+                   <Database size={22} color="#38bdf8" />
+                 </div>
+                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '16px' }}>
+                   <div style={{ backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: '16px', padding: '14px' }}>
+                     <p style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase', margin: 0 }}>Sinkronisasi</p>
+                      <p style={{ fontSize: '14px', fontWeight: 700, margin: '6px 0 0', color: databaseSetupReady ? '#86efac' : '#fcd34d' }}>
+                        {databaseSetupReady ? 'Sudah siap' : 'Perlu dilengkapi'}
+                      </p>
+                   </div>
+                   <div style={{ backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: '16px', padding: '14px' }}>
+                     <p style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase', margin: 0 }}>Orders Diproses</p>
+                     <p style={{ fontSize: '14px', fontWeight: 700, margin: '6px 0 0' }}>{paymentReadyCount} transaksi</p>
+                   </div>
+                 </div>
+                 <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 14px', borderRadius: '14px', backgroundColor: 'rgba(255,255,255,0.06)' }}>
+                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                       <QrCode size={16} color="#38bdf8" />
+                       <span style={{ fontSize: '13px', fontWeight: 600 }}>QRIS publik untuk buyer</span>
+                     </div>
+                     <span style={{ fontSize: '12px', fontWeight: 700, color: qrisPayloadInput ? '#86efac' : '#fcd34d' }}>{qrisPayloadInput ? 'Tersedia' : 'Kosong'}</span>
+                   </div>
+                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 14px', borderRadius: '14px', backgroundColor: 'rgba(255,255,255,0.06)' }}>
+                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                       <Link2 size={16} color="#38bdf8" />
+                       <span style={{ fontSize: '13px', fontWeight: 600 }}>Google Sheet App Script</span>
+                     </div>
+                     <span style={{ fontSize: '12px', fontWeight: 700, color: sheetAppUrl ? '#86efac' : '#fcd34d' }}>{sheetAppUrl ? 'Tersimpan' : 'Kosong'}</span>
+                   </div>
+                 </div>
+               </div>
+            </div>
+          )}
+
+          {activeTab === 'account' && (
+            <div className="animate-fade-in">
+              {(() => {
+                const pageMeta = accountPageMeta[accountSection];
+                return (
+              <div style={{ backgroundColor: '#0f172a', color: 'white', borderRadius: '24px', padding: '24px', marginBottom: '18px', boxShadow: '0 12px 30px rgba(15, 23, 42, 0.18)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px' }}>
+                  <div>
+                    <p style={{ fontSize: '11px', letterSpacing: '1px', textTransform: 'uppercase', color: '#38bdf8', fontWeight: 700, margin: '0 0 6px' }}>{pageMeta.eyebrow}</p>
+                    <h3 style={{ fontSize: '22px', fontWeight: 800, margin: '0 0 6px' }}>{pageMeta.title}</h3>
+                    <p style={{ fontSize: '13px', color: '#cbd5e1', margin: 0 }}>{pageMeta.description}</p>
+                  </div>
+                  <ShieldCheck size={24} color="#38bdf8" />
+                </div>
+              </div>
+                );
+              })()}
+
+              <div style={{ display: 'grid', gap: '16px' }}>
+                {accountSection === 'home' && (
+                  <div style={{ backgroundColor: 'white', borderRadius: '24px', padding: '12px', border: '1px solid #e2e8f0', display: 'grid', gap: '10px' }}>
+                    {[
+                      { key: 'security' as const, icon: ShieldCheck, title: 'Keamanan', desc: 'Akses admin dan PIN kasir' },
+                      { key: 'tax' as const, icon: Percent, title: 'Pajak', desc: 'Atur pajak layanan buyer' },
+                      { key: 'category' as const, icon: FileText, title: 'Kategori', desc: 'Kelola kategori menu utama' },
+                      { key: 'variant' as const, icon: Plus, title: 'Kategori Varian', desc: 'Kelola varian per kategori menu' },
+                    ].map(item => {
+                      const Icon = item.icon;
+                      return (
+                        <button
+                          key={item.key}
+                          type="button"
+                          onClick={() => setAccountSection(item.key)}
+                          style={{
+                            padding: '16px 18px',
+                            borderRadius: '18px',
+                            border: '1px solid #e2e8f0',
+                            backgroundColor: '#ffffff',
+                            color: '#0f172a',
+                            fontWeight: 800,
+                            fontSize: '14px',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            gap: '12px',
+                            textAlign: 'left',
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                            <div style={{ width: '38px', height: '38px', borderRadius: '12px', backgroundColor: '#fff7ed', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                              <Icon size={18} color="#ea580c" />
+                            </div>
+                            <div>
+                              <div style={{ fontSize: '14px', fontWeight: 800, color: '#0f172a' }}>{item.title}</div>
+                              <div style={{ fontSize: '12px', color: '#64748b', fontWeight: 600 }}>{item.desc}</div>
+                            </div>
+                          </div>
+                          <ChevronRight size={18} color="#94a3b8" />
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {accountSection !== 'home' && (
+                  <button
+                    type="button"
+                    onClick={() => setAccountSection('home')}
+                    style={{ width: 'fit-content', padding: '10px 14px', borderRadius: '999px', border: '1px solid #e2e8f0', backgroundColor: 'white', color: '#475569', fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '8px' }}
+                  >
+                    <ArrowLeft size={16} />
+                    Kembali ke Menu Account
+                  </button>
+                )}
+
+                {accountSection === 'security' && (
+                  <>
+                    <div style={{ backgroundColor: 'white', borderRadius: '24px', padding: '22px', border: '1px solid #e2e8f0' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', marginBottom: '18px' }}>
+                        <div>
+                          <h3 style={{ fontSize: '17px', fontWeight: 800, color: '#0f172a', margin: 0 }}>Akses Admin</h3>
+                          <p style={{ fontSize: '12px', color: '#64748b', margin: '4px 0 0' }}>Batasi email yang boleh login ke dashboard admin.</p>
+                        </div>
+                        <UserCog size={18} color="#ea580c" />
+                      </div>
+
+                      <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', borderRadius: '16px', backgroundColor: '#f8fafc', marginBottom: '16px', cursor: 'pointer' }}>
+                        <div>
+                          <p style={{ fontSize: '14px', fontWeight: 700, color: '#0f172a', margin: 0 }}>Aktifkan allowlist admin</p>
+                          <p style={{ fontSize: '12px', color: '#64748b', margin: '4px 0 0' }}>Jika aktif, hanya email di bawah yang boleh mengakses admin.</p>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={securitySettings.adminAllowlistEnabled}
+                          onChange={(e) => setSecuritySettings(prev => ({ ...prev, adminAllowlistEnabled: e.target.checked }))}
+                        />
+                      </label>
+
+                      <div>
+                        <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#64748b', marginBottom: '8px' }}>Daftar email admin</label>
+                        <textarea
+                          value={adminAllowlistInput}
+                          onChange={(e) => setAdminAllowlistInput(e.target.value)}
+                          rows={5}
+                          placeholder={'admin@warkop.com\nowner@warkop.com'}
+                          style={{ width: '100%', padding: '14px', borderRadius: '16px', border: '1px solid #e2e8f0', outline: 'none', fontSize: '13px', resize: 'vertical' }}
+                        />
+                      </div>
+                    </div>
+
+                    <div style={{ backgroundColor: 'white', borderRadius: '24px', padding: '22px', border: '1px solid #e2e8f0' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', marginBottom: '18px' }}>
+                        <div>
+                          <h3 style={{ fontSize: '17px', fontWeight: 800, color: '#0f172a', margin: 0 }}>Keamanan Kasir</h3>
+                          <p style={{ fontSize: '12px', color: '#64748b', margin: '4px 0 0' }}>Tambahkan PIN sebelum halaman kasir bisa diakses.</p>
+                        </div>
+                        <LockKeyhole size={18} color="#ea580c" />
+                      </div>
+
+                      <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', borderRadius: '16px', backgroundColor: '#f8fafc', marginBottom: '16px', cursor: 'pointer' }}>
+                        <div>
+                          <p style={{ fontSize: '14px', fontWeight: 700, color: '#0f172a', margin: 0 }}>Kunci halaman kasir dengan PIN</p>
+                          <p style={{ fontSize: '12px', color: '#64748b', margin: '4px 0 0' }}>Kasir harus memasukkan PIN sebelum membuka panel operasional.</p>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={securitySettings.cashierPinEnabled}
+                          onChange={(e) => setSecuritySettings(prev => ({ ...prev, cashierPinEnabled: e.target.checked }))}
+                        />
+                      </label>
+
+                      <div>
+                        <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#64748b', marginBottom: '8px' }}>PIN Kasir</label>
+                        <input
+                          type="password"
+                          value={securitySettings.cashierPin}
+                          onChange={(e) => setSecuritySettings(prev => ({ ...prev, cashierPin: e.target.value }))}
+                          placeholder="Masukkan PIN kasir"
+                          style={{ width: '100%', padding: '14px', borderRadius: '16px', border: '1px solid #e2e8f0', outline: 'none', fontSize: '13px' }}
+                        />
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                {accountSection === 'tax' && (
+                  <div style={{ backgroundColor: 'white', borderRadius: '24px', padding: '22px', border: '1px solid #e2e8f0' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', marginBottom: '18px' }}>
+                      <div>
+                        <h3 style={{ fontSize: '17px', fontWeight: 800, color: '#0f172a', margin: 0 }}>Konfigurasi Pajak</h3>
+                        <p style={{ fontSize: '12px', color: '#64748b', margin: '4px 0 0' }}>Mengontrol total di review pesanan dan detail transaksi buyer.</p>
+                      </div>
+                      <Percent size={18} color="#ea580c" />
+                    </div>
+
+                    <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', borderRadius: '16px', backgroundColor: '#f8fafc', marginBottom: '16px', cursor: 'pointer' }}>
+                      <div>
+                        <p style={{ fontSize: '14px', fontWeight: 700, color: '#0f172a', margin: 0 }}>Aktifkan pajak layanan</p>
+                        <p style={{ fontSize: '12px', color: '#64748b', margin: '4px 0 0' }}>Jika dimatikan, semua checkout buyer otomatis tanpa pajak.</p>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={taxSettings.enabled}
+                        onChange={(e) => setTaxSettings(prev => ({ ...prev, enabled: e.target.checked }))}
+                      />
+                    </label>
+
+                    <div style={{ display: 'grid', gap: '14px' }}>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#64748b', marginBottom: '8px' }}>Persentase pajak layanan</label>
+                        <input
+                          type="number"
+                          min="0"
+                          max="100"
+                          value={taxSettings.rate}
+                          onChange={(e) => setTaxSettings(prev => ({ ...prev, rate: Number(e.target.value) }))}
+                          style={{ width: '100%', padding: '14px', borderRadius: '16px', border: '1px solid #e2e8f0', outline: 'none', fontSize: '13px' }}
+                        />
+                      </div>
+                      <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', borderRadius: '16px', backgroundColor: '#f8fafc', cursor: 'pointer' }}>
+                        <div>
+                          <p style={{ fontSize: '14px', fontWeight: 700, color: '#0f172a', margin: 0 }}>Terapkan juga ke QRIS</p>
+                          <p style={{ fontSize: '12px', color: '#64748b', margin: '4px 0 0' }}>Biarkan mati jika QRIS harus tetap bebas pajak.</p>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={taxSettings.applyToQris}
+                          onChange={(e) => setTaxSettings(prev => ({ ...prev, applyToQris: e.target.checked }))}
+                        />
+                      </label>
+                    </div>
+                  </div>
+                )}
+
+                {accountSection === 'category' && (
+                  <div style={{ backgroundColor: 'white', borderRadius: '24px', padding: '22px', border: '1px solid #e2e8f0' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', marginBottom: '18px' }}>
+                      <div>
+                        <h3 style={{ fontSize: '17px', fontWeight: 800, color: '#0f172a', margin: 0 }}>Kategori Menu</h3>
+                        <p style={{ fontSize: '12px', color: '#64748b', margin: '4px 0 0' }}>Tambah, ubah, dan hapus kategori agar buyer lebih mudah mengenali jenis menu.</p>
+                      </div>
+                      <FileText size={18} color="#ea580c" />
+                    </div>
+
+                    <div style={{ display: 'grid', gap: '12px', marginBottom: '18px' }}>
+                      <input
+                        type="text"
+                        value={categoryNameInput}
+                        onChange={(e) => setCategoryNameInput(e.target.value)}
+                        placeholder="Contoh: Dessert, Kopi Susu, Mie"
+                        style={{ width: '100%', padding: '14px', borderRadius: '16px', border: '1px solid #e2e8f0', outline: 'none', fontSize: '13px' }}
+                      />
+                      <div style={{ display: 'flex', gap: '10px' }}>
+                        <button
+                          type="button"
+                          onClick={() => void handleSaveCategory()}
+                          style={{ flex: 1, padding: '14px', borderRadius: '16px', border: 'none', backgroundColor: '#0f172a', color: 'white', fontWeight: 800, cursor: 'pointer' }}
+                        >
+                          {editingCategory ? 'Simpan Perubahan' : 'Tambah Kategori'}
+                        </button>
+                        {editingCategory && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingCategory(null);
+                              setCategoryNameInput('');
+                            }}
+                            style={{ padding: '14px 16px', borderRadius: '16px', border: '1px solid #e2e8f0', backgroundColor: 'white', color: '#475569', fontWeight: 700, cursor: 'pointer' }}
+                          >
+                            Batal
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                      {menuCategories.map(category => {
+                        const usedCount = menus.filter(menu => menu.category === category).length;
+                        return (
+                          <div key={category} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '14px 16px', borderRadius: '18px', backgroundColor: '#f8fafc', border: '1px solid #e2e8f0' }}>
+                            <div>
+                              <p style={{ fontSize: '14px', fontWeight: 800, color: '#0f172a', margin: 0 }}>{category}</p>
+                              <p style={{ fontSize: '12px', color: '#64748b', margin: '4px 0 0' }}>{usedCount} menu menggunakan kategori ini</p>
+                            </div>
+                            <div style={{ display: 'flex', gap: '8px' }}>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingCategory(category);
+                                  setCategoryNameInput(category);
+                                }}
+                                style={{ padding: '10px 12px', borderRadius: '12px', border: '1px solid #e2e8f0', backgroundColor: 'white', color: '#0f172a', fontWeight: 700, cursor: 'pointer' }}
+                              >
+                                Edit
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void handleDeleteCategory(category)}
+                                style={{ padding: '10px 12px', borderRadius: '12px', border: '1px solid #fecaca', backgroundColor: '#fef2f2', color: '#dc2626', fontWeight: 700, cursor: 'pointer' }}
+                              >
+                                Hapus
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {accountSection === 'variant' && (
+                  <div style={{ display: 'grid', gap: '16px' }}>
+                    <div style={{ backgroundColor: 'white', borderRadius: '24px', padding: '22px', border: '1px solid #e2e8f0' }}>
+                      <div style={{ marginBottom: '18px' }}>
+                        <h3 style={{ fontSize: '17px', fontWeight: 800, color: '#0f172a', margin: 0 }}>Kategori Varian</h3>
+                        <p style={{ fontSize: '12px', color: '#64748b', margin: '4px 0 0' }}>Atur logika varian seperti hangat/es, level gula, topping, dan lainnya.</p>
+                      </div>
+
+                      <div style={{ display: 'grid', gap: '12px' }}>
+                        <input
+                          type="text"
+                          value={variantGroupDraft.name}
+                          onChange={(e) => setVariantGroupDraft(prev => ({ ...prev, name: e.target.value }))}
+                          placeholder="Nama kategori varian, contoh: Suhu Minuman"
+                          style={{ width: '100%', padding: '14px', borderRadius: '16px', border: '1px solid #e2e8f0', outline: 'none', fontSize: '13px' }}
+                        />
+                        <textarea
+                          value={variantGroupDraft.description}
+                          onChange={(e) => setVariantGroupDraft(prev => ({ ...prev, description: e.target.value }))}
+                          rows={3}
+                          placeholder="Keterangan kategori varian"
+                          style={{ width: '100%', padding: '14px', borderRadius: '16px', border: '1px solid #e2e8f0', outline: 'none', fontSize: '13px', resize: 'vertical' }}
+                        />
+                        <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', borderRadius: '16px', backgroundColor: '#f8fafc', cursor: 'pointer' }}>
+                          <div>
+                            <p style={{ fontSize: '14px', fontWeight: 700, color: '#0f172a', margin: 0 }}>Tampilan status</p>
+                            <p style={{ fontSize: '12px', color: '#64748b', margin: '4px 0 0' }}>{variantGroupDraft.visible ? 'Tampilkan ke buyer' : 'Sembunyikan dari buyer'}</p>
+                          </div>
+                          <input
+                            type="checkbox"
+                            checked={variantGroupDraft.visible}
+                            onChange={(e) => setVariantGroupDraft(prev => ({ ...prev, visible: e.target.checked }))}
+                          />
+                        </label>
+                        <div style={{ padding: '14px 16px', borderRadius: '16px', backgroundColor: '#f8fafc' }}>
+                          <p style={{ fontSize: '12px', fontWeight: 700, color: '#64748b', margin: '0 0 10px' }}>Pakai untuk kategori menu</p>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                            {menuCategories.map(category => {
+                              const selected = variantGroupDraft.appliesToCategories.includes(category);
+                              return (
+                                <button
+                                  key={category}
+                                  type="button"
+                                  onClick={() => setVariantGroupDraft(prev => ({
+                                    ...prev,
+                                    appliesToCategories: selected
+                                      ? prev.appliesToCategories.filter(item => item !== category)
+                                      : [...prev.appliesToCategories, category],
+                                  }))}
+                                  style={{
+                                    padding: '8px 12px',
+                                    borderRadius: '999px',
+                                    border: selected ? '1px solid #ea580c' : '1px solid #cbd5e1',
+                                    backgroundColor: selected ? '#fff7ed' : 'white',
+                                    color: selected ? '#ea580c' : '#475569',
+                                    fontWeight: 700,
+                                    fontSize: '12px',
+                                    cursor: 'pointer',
+                                  }}
+                                >
+                                  {category}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                        <div style={{ display: 'flex', gap: '10px' }}>
+                          <button type="button" onClick={handleSaveVariantGroup} style={{ flex: 1, padding: '14px', borderRadius: '16px', border: 'none', backgroundColor: '#0f172a', color: 'white', fontWeight: 800, cursor: 'pointer' }}>
+                            {editingVariantGroupId ? 'Simpan Kategori Varian' : 'Tambah Kategori Varian'}
+                          </button>
+                          {editingVariantGroupId && (
+                            <button type="button" onClick={resetVariantGroupDraft} style={{ padding: '14px 16px', borderRadius: '16px', border: '1px solid #e2e8f0', backgroundColor: 'white', color: '#475569', fontWeight: 700, cursor: 'pointer' }}>
+                              Batal
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {!selectedVariantGroup && (
+                      <div style={{ backgroundColor: 'white', borderRadius: '24px', padding: '22px', border: '1px solid #e2e8f0', display: 'grid', gap: '12px' }}>
+                        <div>
+                          <h4 style={{ fontSize: '16px', fontWeight: 800, color: '#0f172a', margin: 0 }}>Daftar Kategori Varian</h4>
+                          <p style={{ fontSize: '12px', color: '#64748b', margin: '6px 0 0' }}>Klik salah satu kategori varian untuk masuk ke halaman detail dan mengelola data variannya.</p>
+                        </div>
+
+                        {variantGroups.length === 0 && (
+                          <div style={{ padding: '16px', borderRadius: '18px', backgroundColor: '#f8fafc', border: '1px dashed #cbd5e1', fontSize: '13px', color: '#64748b', textAlign: 'center' }}>
+                            Belum ada kategori varian. Tambahkan kategori varian baru terlebih dahulu.
+                          </div>
+                        )}
+
+                        {variantGroups.map(group => (
+                          <div key={group.id} style={{ padding: '16px', borderRadius: '18px', backgroundColor: '#f8fafc', border: '1px solid #e2e8f0', display: 'grid', gap: '12px' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'flex-start' }}>
+                              <div>
+                                <h4 style={{ fontSize: '15px', fontWeight: 800, color: '#0f172a', margin: 0 }}>{group.name}</h4>
+                                <p style={{ fontSize: '12px', color: '#64748b', margin: '6px 0 0' }}>{group.description || 'Tanpa keterangan tambahan.'}</p>
+                                <p style={{ fontSize: '11px', color: '#94a3b8', margin: '8px 0 0' }}>Kategori menu: {group.appliesToCategories.join(', ') || 'Belum dipilih'} • {group.visible ? 'Tampilkan' : 'Sembunyikan'} • {group.options.length} varian</p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => setSelectedVariantGroupId(group.id)}
+                                style={{ padding: '10px 14px', borderRadius: '12px', border: 'none', backgroundColor: '#0f172a', color: 'white', fontWeight: 800, cursor: 'pointer', whiteSpace: 'nowrap' }}
+                              >
+                                Buka Detail
+                              </button>
+                            </div>
+                            <div style={{ display: 'flex', gap: '8px' }}>
+                              <button type="button" onClick={() => {
+                                setEditingVariantGroupId(group.id);
+                                setVariantGroupDraft({
+                                  name: group.name,
+                                  description: group.description,
+                                  visible: group.visible,
+                                  appliesToCategories: group.appliesToCategories,
+                                });
+                              }} style={{ padding: '10px 12px', borderRadius: '12px', border: '1px solid #e2e8f0', backgroundColor: 'white', color: '#0f172a', fontWeight: 700, cursor: 'pointer' }}>
+                                Edit
+                              </button>
+                              <button type="button" onClick={() => void handleDeleteVariantGroup(group.id)} style={{ padding: '10px 12px', borderRadius: '12px', border: '1px solid #fecaca', backgroundColor: '#fef2f2', color: '#dc2626', fontWeight: 700, cursor: 'pointer' }}>
+                                Hapus
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {selectedVariantGroup && (
+                      <div style={{ display: 'grid', gap: '16px' }}>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedVariantGroupId(null)}
+                          style={{ width: 'fit-content', padding: '10px 14px', borderRadius: '999px', border: '1px solid #e2e8f0', backgroundColor: 'white', color: '#475569', fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '8px' }}
+                        >
+                          <ArrowLeft size={16} />
+                          Kembali ke Daftar Kategori Varian
+                        </button>
+
+                        <div style={{ backgroundColor: 'white', borderRadius: '24px', padding: '22px', border: '1px solid #e2e8f0' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'flex-start', marginBottom: '14px' }}>
+                            <div>
+                              <h4 style={{ fontSize: '16px', fontWeight: 800, color: '#0f172a', margin: 0 }}>{selectedVariantGroup.name}</h4>
+                              <p style={{ fontSize: '12px', color: '#64748b', margin: '6px 0 0' }}>{selectedVariantGroup.description || 'Tanpa keterangan tambahan.'}</p>
+                              <p style={{ fontSize: '11px', color: '#94a3b8', margin: '8px 0 0' }}>Kategori menu: {selectedVariantGroup.appliesToCategories.join(', ') || 'Belum dipilih'} • {selectedVariantGroup.visible ? 'Tampilkan' : 'Sembunyikan'}</p>
+                            </div>
+                            <div style={{ display: 'flex', gap: '8px' }}>
+                              <button type="button" onClick={() => {
+                                setEditingVariantGroupId(selectedVariantGroup.id);
+                                setVariantGroupDraft({
+                                  name: selectedVariantGroup.name,
+                                  description: selectedVariantGroup.description,
+                                  visible: selectedVariantGroup.visible,
+                                  appliesToCategories: selectedVariantGroup.appliesToCategories,
+                                });
+                              }} style={{ padding: '10px 12px', borderRadius: '12px', border: '1px solid #e2e8f0', backgroundColor: 'white', color: '#0f172a', fontWeight: 700, cursor: 'pointer' }}>
+                                Edit Kategori
+                              </button>
+                              <button type="button" onClick={() => void handleDeleteVariantGroup(selectedVariantGroup.id)} style={{ padding: '10px 12px', borderRadius: '12px', border: '1px solid #fecaca', backgroundColor: '#fef2f2', color: '#dc2626', fontWeight: 700, cursor: 'pointer' }}>
+                                Hapus Kategori
+                              </button>
+                            </div>
+                          </div>
+
+                          <div style={{ display: 'grid', gap: '10px', marginTop: '16px' }}>
+                            {selectedVariantGroup.options.length === 0 && (
+                              <div style={{ padding: '16px', borderRadius: '18px', backgroundColor: '#f8fafc', border: '1px dashed #cbd5e1', fontSize: '13px', color: '#64748b', textAlign: 'center' }}>
+                                Belum ada varian di kategori ini. Tambahkan varian baru di bawah.
+                              </div>
+                            )}
+
+                            {selectedVariantGroup.options.map(option => (
+                              <div key={option.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', padding: '14px 16px', borderRadius: '16px', backgroundColor: '#f8fafc', border: '1px solid #e2e8f0' }}>
+                                <div>
+                                  <p style={{ fontSize: '14px', fontWeight: 800, color: '#0f172a', margin: 0 }}>{option.name}</p>
+                                  <p style={{ fontSize: '12px', color: '#64748b', margin: '4px 0 0' }}>
+                                    {option.price > 0 ? `Tambah Rp ${formatRupiah(option.price)}` : 'Gratis'} • {option.inStock ? 'Stok tersedia' : 'Stok habis'}
+                                  </p>
+                                </div>
+                                <button type="button" onClick={() => handleDeleteVariantOption(selectedVariantGroup.id, option.id)} style={{ padding: '10px 12px', borderRadius: '12px', border: '1px solid #fecaca', backgroundColor: '#fef2f2', color: '#dc2626', fontWeight: 700, cursor: 'pointer' }}>
+                                  Hapus
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div style={{ backgroundColor: 'white', borderRadius: '24px', padding: '22px', border: '1px solid #e2e8f0', display: 'grid', gap: '10px' }}>
+                          <p style={{ fontSize: '15px', fontWeight: 800, color: '#0f172a', margin: 0 }}>Tambah Varian</p>
+                          <input
+                            type="text"
+                            value={variantOptionDrafts[selectedVariantGroup.id]?.name || ''}
+                            onChange={(e) => setVariantOptionDrafts(prev => ({ ...prev, [selectedVariantGroup.id]: { name: e.target.value, price: prev[selectedVariantGroup.id]?.price || 0, inStock: prev[selectedVariantGroup.id]?.inStock ?? true } }))}
+                            placeholder="Nama varian, contoh: Hangat"
+                            style={{ width: '100%', padding: '14px', borderRadius: '16px', border: '1px solid #e2e8f0', outline: 'none', fontSize: '13px' }}
+                          />
+                          <input
+                            type="number"
+                            min="0"
+                            value={variantOptionDrafts[selectedVariantGroup.id]?.price || 0}
+                            onChange={(e) => setVariantOptionDrafts(prev => ({ ...prev, [selectedVariantGroup.id]: { name: prev[selectedVariantGroup.id]?.name || '', price: Number(e.target.value), inStock: prev[selectedVariantGroup.id]?.inStock ?? true } }))}
+                            placeholder="Harga varian, 0 jika gratis"
+                            style={{ width: '100%', padding: '14px', borderRadius: '16px', border: '1px solid #e2e8f0', outline: 'none', fontSize: '13px' }}
+                          />
+                          <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', borderRadius: '16px', backgroundColor: '#f8fafc', cursor: 'pointer' }}>
+                            <span style={{ fontSize: '14px', fontWeight: 700, color: '#0f172a' }}>Ketersediaan stok</span>
+                            <input
+                              type="checkbox"
+                              checked={variantOptionDrafts[selectedVariantGroup.id]?.inStock ?? true}
+                              onChange={(e) => setVariantOptionDrafts(prev => ({ ...prev, [selectedVariantGroup.id]: { name: prev[selectedVariantGroup.id]?.name || '', price: prev[selectedVariantGroup.id]?.price || 0, inStock: e.target.checked } }))}
+                            />
+                          </label>
+                          <button type="button" onClick={() => handleSaveVariantOption(selectedVariantGroup.id)} style={{ width: '100%', padding: '14px', borderRadius: '16px', border: 'none', backgroundColor: '#ea580c', color: 'white', fontWeight: 800, cursor: 'pointer' }}>
+                            Simpan Varian
+                          </button>
+                        </div>
+                      </div>
                     )}
                   </div>
-                </div>
-                <div style={{ backgroundColor: 'white', borderRadius: '20px', padding: '20px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.02)', border: '1px solid #f1f5f9' }}>
-                  <p style={{ fontSize: '11px', fontWeight: 700, color: '#94a3b8', letterSpacing: '0.5px', marginBottom: '8px' }}>PESANAN AKTIF</p>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span style={{ fontSize: '24px', fontWeight: 800, color: '#ea580c' }}>{activeOrders.length}</span>
-                    <Clock size={14} color="#ea580c" />
-                  </div>
-                </div>
-              </div>
+                )}
 
-              {/* Quick Actions */}
-              <h2 style={{ fontSize: '17px', fontWeight: 700, margin: '0 0 16px 0', color: '#0f172a' }}>Quick Action</h2>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px', marginBottom: '32px' }}>
-                <div onClick={() => { setActiveTab('menu'); setTimeout(() => setIsMenuModalOpen(true), 100); }} style={{ backgroundColor: 'white', borderRadius: '16px', padding: '16px 8px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '12px', cursor: 'pointer', boxShadow: '0 2px 4px rgba(0,0,0,0.02)', border: '1px solid #f1f5f9' }}>
-                  <div style={{ width: '48px', height: '48px', borderRadius: '50%', backgroundColor: '#ffedd5', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <Plus size={20} color="#ea580c" strokeWidth={3} />
-                  </div>
-                  <span style={{ fontSize: '11px', fontWeight: 700, color: '#0f172a', textAlign: 'center' }}>Tambah Menu</span>
-                </div>
-                <div onClick={() => setActiveTab('table')} style={{ backgroundColor: 'white', borderRadius: '16px', padding: '16px 8px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '12px', cursor: 'pointer', boxShadow: '0 2px 4px rgba(0,0,0,0.02)', border: '1px solid #f1f5f9' }}>
-                  <div style={{ width: '48px', height: '48px', borderRadius: '50%', backgroundColor: '#e0e7ff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <QrCode size={20} color="#4f46e5" strokeWidth={2.5} />
-                  </div>
-                  <span style={{ fontSize: '11px', fontWeight: 700, color: '#0f172a', textAlign: 'center' }}>Cetak QR</span>
-                </div>
-                <div onClick={() => window.location.href = '/kasir'} style={{ backgroundColor: 'white', borderRadius: '16px', padding: '16px 8px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '12px', cursor: 'pointer', boxShadow: '0 2px 4px rgba(0,0,0,0.02)', border: '1px solid #f1f5f9' }}>
-                  <div style={{ width: '48px', height: '48px', borderRadius: '50%', backgroundColor: '#dcfce7', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <Calculator size={20} color="#16a34a" strokeWidth={2.5} />
-                  </div>
-                  <span style={{ fontSize: '11px', fontWeight: 700, color: '#0f172a', textAlign: 'center' }}>Buka Kasir</span>
-                </div>
-              </div>
-
-              {/* Status Meja Quick View */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                <h2 style={{ fontSize: '17px', fontWeight: 700, margin: 0, color: '#0f172a' }}>Status Meja</h2>
-                <div style={{ display: 'flex', gap: '12px', fontSize: '11px', color: '#64748b', fontWeight: 600 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                    <div style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#22c55e' }}></div> Tersedia
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                    <div style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#ea580c' }}></div> Terisi
-                  </div>
-                </div>
-              </div>
-              
-              <div style={{ backgroundColor: 'white', borderRadius: '20px', padding: '24px 20px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.02)', border: '1px solid #f1f5f9' }}>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
-                  {tables.map(table => {
-                    const isOccupied = table.status === 'Aktif/Unpaid';
-                    return (
-                      <div key={table.id} onClick={() => setActiveTab('table')} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', cursor: 'pointer' }}>
-                        <div style={{ width: '56px', height: '56px', borderRadius: '16px', backgroundColor: isOccupied ? '#ea580c' : '#22c55e', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '8px', boxShadow: isOccupied ? '0 4px 10px rgba(234, 88, 12, 0.3)' : '0 4px 10px rgba(34, 197, 94, 0.3)' }}>
-                          <Table2 size={24} color="white" />
-                        </div>
-                        <span style={{ fontSize: '11px', fontWeight: 700, color: '#0f172a' }}>T-{table.number.toString().padStart(2, '0')}</span>
-                      </div>
-                    );
-                  })}
-                </div>
+                {(accountSection === 'security' || accountSection === 'tax') && (
+                  <button
+                    type="button"
+                    onClick={handleSaveAccountSettings}
+                    style={{ width: '100%', padding: '16px', borderRadius: '18px', border: 'none', backgroundColor: '#0f172a', color: 'white', fontSize: '15px', fontWeight: 800, cursor: 'pointer', boxShadow: '0 12px 24px rgba(15, 23, 42, 0.16)' }}
+                  >
+                    Simpan Pengaturan Account
+                  </button>
+                )}
               </div>
             </div>
           )}
 
           {activeTab === 'menu' && (
             <div className="animate-fade-in">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
-                <h2 style={{ fontSize: '20px', fontWeight: 800, color: '#0f172a', margin: 0 }}>Kelola Menu</h2>
-                <button 
-                  onClick={() => { setEditingMenu(null); setIsMenuModalOpen(true); }}
-                  style={{ backgroundColor: '#ea580c', color: 'white', border: 'none', borderRadius: '20px', padding: '8px 16px', fontSize: '13px', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', boxShadow: '0 4px 6px rgba(234, 88, 12, 0.2)' }}
-                >
-                  <Plus size={16} /> Tambah Menu
-                </button>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                 <p style={{ fontSize: '14px', color: '#64748b', fontWeight: 600 }}>Terdapat {menus.length} menu aktif.</p>
+                 <button 
+                   onClick={() => { setEditingMenu(null); setIsMenuModalOpen(true); }}
+                   style={{ backgroundColor: '#ea580c', color: 'white', border: 'none', borderRadius: '12px', padding: '10px 16px', fontSize: '13px', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}
+                 >
+                   <Plus size={16} /> Tambah Menu
+                 </button>
               </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                {menus.map(menu => (
-                  <div key={menu.id} style={{ backgroundColor: 'white', borderRadius: '16px', padding: '16px', display: 'flex', alignItems: 'center', border: '1px solid #f1f5f9', boxShadow: '0 2px 4px rgba(0,0,0,0.02)' }}>
-                    <img src={menu.image} alt={menu.name} style={{ width: '64px', height: '64px', borderRadius: '12px', objectFit: 'cover', opacity: menu.available ? 1 : 0.5 }} />
-                    <div style={{ marginLeft: '16px', flex: 1 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                        <h3 style={{ fontSize: '15px', fontWeight: 700, color: '#0f172a', margin: '0 0 4px 0' }}>{menu.name}</h3>
-                        {!menu.available && <span style={{ backgroundColor: '#fee2e2', color: '#ef4444', fontSize: '10px', fontWeight: 700, padding: '2px 6px', borderRadius: '4px' }}>Habis</span>}
-                      </div>
-                      <p style={{ fontSize: '12px', color: '#64748b', margin: '0 0 8px 0' }}>{menu.category}</p>
-                      <p style={{ fontSize: '14px', fontWeight: 700, color: '#ea580c', margin: 0 }}>Rp {menu.price.toLocaleString('id-ID')}</p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  {menus.map(menu => (
+                    <div key={menu.id} style={{ display: 'flex', alignItems: 'center', backgroundColor: 'white', padding: '12px', borderRadius: '16px', border: '1px solid #f1f5f9' }}>
+                        <img src={menu.image} style={{ width: '60px', height: '60px', borderRadius: '12px', objectFit: 'cover' }} />
+                        <div style={{ marginLeft: '16px', flex: 1 }}>
+                            <h4 style={{ fontSize: '15px', fontWeight: 700, color: '#0f172a', margin: '0 0 4px' }}>{menu.name}</h4>
+                            <p style={{ fontSize: '12px', color: '#64748b', margin: '0 0 6px' }}>{menu.category}</p>
+                            <p style={{ fontSize: '14px', fontWeight: 800, color: '#ea580c', margin: 0 }}>Rp {formatRupiah(menu.price)}</p>
+                        </div>
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                           <button onClick={() => { setEditingMenu(menu); setIsMenuModalOpen(true); }} style={{ width: '36px', height: '36px', borderRadius: '10px', backgroundColor: '#f8fafc', border: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}><Edit size={16} color="#64748b" /></button>
+                           <button onClick={() => handleDeleteMenu(menu.id)} style={{ width: '36px', height: '36px', borderRadius: '10px', backgroundColor: '#fef2f2', border: '1px solid #fee2e2', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}><Trash2 size={16} color="#ef4444" /></button>
+                        </div>
                     </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginLeft: '12px' }}>
-                      <button onClick={() => { setEditingMenu(menu); setIsMenuModalOpen(true); }} style={{ width: '32px', height: '32px', borderRadius: '8px', backgroundColor: '#f1f5f9', border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: '#64748b' }}>
-                        <Edit size={16} />
-                      </button>
-                      <button onClick={() => handleDeleteMenu(menu.id)} style={{ width: '32px', height: '32px', borderRadius: '8px', backgroundColor: '#fee2e2', border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: '#ef4444' }}>
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                  ))}
               </div>
             </div>
           )}
 
           {activeTab === 'table' && (
             <div className="animate-fade-in">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
-                <h2 style={{ fontSize: '20px', fontWeight: 800, color: '#0f172a', margin: 0 }}>Kelola Meja</h2>
-                <button 
-                  onClick={handleAddTable}
-                  style={{ backgroundColor: '#ea580c', color: 'white', border: 'none', borderRadius: '20px', padding: '8px 16px', fontSize: '13px', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', boxShadow: '0 4px 6px rgba(234, 88, 12, 0.2)' }}
-                >
-                  <Plus size={16} /> Tambah Meja
+                <button onClick={handleAddTable} style={{ width: '100%', marginBottom: '24px', padding: '14px', borderRadius: '16px', backgroundColor: '#ffffff', border: '2px dashed #cbd5e1', color: '#475569', fontWeight: 700, fontSize: '14px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+                    <Plus size={18} /> Tambah Meja Baru
                 </button>
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
-                {tables.map(table => {
-                  const token = getDailyToken();
-                  const qrUrl = `${window.location.origin}/menu?meja=${table.number}&token=${token}`;
-                  return (
-                    <div key={table.id} style={{ position: 'relative', backgroundColor: 'white', borderRadius: '16px', padding: '16px', display: 'flex', flexDirection: 'column', alignItems: 'center', border: '1px solid #f1f5f9', boxShadow: '0 2px 4px rgba(0,0,0,0.02)' }}>
-                      <button 
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          confirmDeleteTable(table.id, table.number);
-                        }}
-                        style={{ position: 'absolute', top: '12px', right: '12px', width: '32px', height: '32px', borderRadius: '8px', backgroundColor: '#fee2e2', border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: '#ef4444', zIndex: 10 }}
-                      >
-                        <Trash2 size={16} />
-                      </button>
-                      <h3 style={{ fontSize: '16px', fontWeight: 700, color: '#0f172a', margin: '0 0 16px 0' }}>Meja {table.number.toString().padStart(2, '0')}</h3>
-                      <div id={`qr-meja-${table.number}`} style={{ padding: '24px', backgroundColor: '#ffffff', borderRadius: '12px', marginBottom: '16px', border: '1px solid #f1f5f9', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                        <h4 style={{ fontSize: '14px', fontWeight: 800, margin: '0 0 12px 0', color: '#ea580c' }}>MEJA {table.number.toString().padStart(2, '0')}</h4>
-                        <QRCodeSVG value={qrUrl} size={120} level="M" />
-                      </div>
-                      <button 
-                        onClick={() => handleDownloadQR(table.number)}
-                        style={{ width: '100%', padding: '10px', borderRadius: '8px', backgroundColor: '#ffffff', border: '1px solid #e2e8f0', color: '#0f172a', fontSize: '12px', fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', cursor: 'pointer' }}
-                      >
-                        <Download size={14} /> Unduh QR
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                    {tables.sort((a,b) => a.number - b.number).map(table => (
+                        <div key={table.id} style={{ backgroundColor: 'white', borderRadius: '20px', padding: '16px', border: '1px solid #f1f5f9', textAlign: 'center' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', marginBottom: '12px' }}>
+                                <span style={{ fontSize: '14px', fontWeight: 800, color: '#0f172a' }}>NO. {table.number}</span>
+                                <Trash2 size={16} color="#ef4444" onClick={() => confirmDeleteTable(table.id, table.number)} style={{ cursor: 'pointer' }} />
+                            </div>
+                            <div id={`qr-meja-${table.number}`} style={{ padding: '16px', backgroundColor: 'white', borderRadius: '12px', border: '1px solid #f1f5f9' }}>
+                                <QRCodeSVG value={`${window.location.origin}/menu?meja=${table.number}&token=${getDailyToken()}`} size={120} />
+                            </div>
+                            <button onClick={() => handleDownloadQR(table.number)} style={{ marginTop: '16px', width: '100%', padding: '10px', borderRadius: '10px', backgroundColor: '#f1f5f9', border: 'none', color: '#475569', fontWeight: 700, fontSize: '12px', cursor: 'pointer' }}>
+                                Download QR
+                            </button>
+                        </div>
+                    ))}
+                </div>
             </div>
           )}
 
           {activeTab === 'laporan' && (
-            <div className="animate-fade-in" style={{ paddingBottom: '80px' }}>
-              
-              {/* Ringkasan Hari Ini */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <h2 style={{ fontSize: '16px', fontWeight: 700, color: '#0f172a', margin: 0 }}>Ringkasan Hari Ini</h2>
-                  <Settings size={16} color="#64748b" style={{ cursor: 'pointer' }} onClick={() => setIsSheetModalOpen(true)} />
-                </div>
-                <span style={{ fontSize: '12px', color: '#64748b', fontWeight: 600 }}>{new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
-              </div>
-
-              {/* Card Total Omzet */}
-              <div style={{ backgroundColor: '#f97316', borderRadius: '16px', padding: '24px', color: 'white', marginBottom: '16px', boxShadow: '0 10px 15px -3px rgba(249, 115, 22, 0.3)' }}>
-                <p style={{ fontSize: '13px', fontWeight: 600, margin: '0 0 8px 0', opacity: 0.9 }}>Total Omzet</p>
-                <h3 style={{ fontSize: '32px', fontWeight: 800, margin: '0 0 16px 0', letterSpacing: '-0.5px' }}>Rp {totalRevenue.toLocaleString('id-ID')}</h3>
-                <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', backgroundColor: 'rgba(255,255,255,0.25)', padding: '6px 12px', borderRadius: '20px', fontSize: '11px', fontWeight: 700 }}>
-                  <TrendingUp size={12} strokeWidth={3} /> +12.5% vs kemarin
-                </div>
-              </div>
-
-              {/* Mini Cards */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '24px' }}>
-                <div style={{ backgroundColor: 'white', borderRadius: '16px', padding: '16px', border: '1px solid #f1f5f9', boxShadow: '0 2px 4px rgba(0,0,0,0.02)' }}>
-                  <p style={{ fontSize: '11px', color: '#64748b', fontWeight: 600, margin: '0 0 8px 0' }}>Total Transaksi</p>
-                  <h4 style={{ fontSize: '20px', fontWeight: 800, color: '#0f172a', margin: '0 0 6px 0' }}>{totalTransaksi}</h4>
-                  <p style={{ fontSize: '10px', fontWeight: 700, color: '#22c55e', margin: 0 }}>+5 orders</p>
-                </div>
-                <div style={{ backgroundColor: 'white', borderRadius: '16px', padding: '16px', border: '1px solid #f1f5f9', boxShadow: '0 2px 4px rgba(0,0,0,0.02)' }}>
-                  <p style={{ fontSize: '11px', color: '#64748b', fontWeight: 600, margin: '0 0 8px 0' }}>Metode Utama</p>
-                  <h4 style={{ fontSize: '20px', fontWeight: 800, color: '#ea580c', margin: '0 0 6px 0' }}>{metodeUtama.toUpperCase()}</h4>
-                  <p style={{ fontSize: '10px', fontWeight: 600, color: '#94a3b8', margin: 0 }}>{metodeUtamaVolume}% Volume</p>
-                </div>
-              </div>
-
-              {/* Revenue by Category */}
-              <div style={{ backgroundColor: 'white', borderRadius: '16px', padding: '20px', border: '1px solid #f1f5f9', boxShadow: '0 2px 4px rgba(0,0,0,0.02)', marginBottom: '24px' }}>
-                <h3 style={{ fontSize: '14px', fontWeight: 700, color: '#0f172a', margin: '0 0 20px 0' }}>Revenue by Category</h3>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px', textAlign: 'center' }}>
-                  <div style={{ borderRight: '1px solid #f1f5f9' }}>
-                    <p style={{ fontSize: '10px', fontWeight: 800, color: '#4472c4', margin: '0 0 16px 0', letterSpacing: '0.5px' }}>COFFEE</p>
-                    <p style={{ fontSize: '12px', color: '#94a3b8', margin: '0 0 4px 0' }}>Coffee</p>
-                    <p style={{ fontSize: '14px', fontWeight: 800, color: '#0f172a', margin: 0 }}>Rp {formatCompact(categoryRevenue.COFFEE)}</p>
+            <div className="animate-fade-in">
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '20px' }}>
+                <div style={{ backgroundColor: 'white', borderRadius: '18px', padding: '16px', border: '1px solid #f1f5f9' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+                    <Clock3 size={16} color="#ea580c" />
+                    <span style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 700 }}>MENUNGGU BAYAR</span>
                   </div>
-                  <div style={{ borderRight: '1px solid #f1f5f9' }}>
-                    <p style={{ fontSize: '10px', fontWeight: 800, color: '#4472c4', margin: '0 0 16px 0', letterSpacing: '0.5px' }}>FOOD</p>
-                    <p style={{ fontSize: '12px', color: '#94a3b8', margin: '0 0 4px 0' }}>Food</p>
-                    <p style={{ fontSize: '14px', fontWeight: 800, color: '#0f172a', margin: 0 }}>Rp {formatCompact(categoryRevenue.FOOD)}</p>
+                  <p style={{ fontSize: '24px', fontWeight: 800, color: '#0f172a', margin: 0 }}>{activeOrders.length}</p>
+                </div>
+                <div style={{ backgroundColor: 'white', borderRadius: '18px', padding: '16px', border: '1px solid #f1f5f9' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+                    <CreditCard size={16} color="#3b82f6" />
+                    <span style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 700 }}>TOTAL ORDER</span>
                   </div>
+                  <p style={{ fontSize: '24px', fontWeight: 800, color: '#0f172a', margin: 0 }}>{orders.length}</p>
+                </div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '20px' }}>
+                <div style={{ backgroundColor: 'white', borderRadius: '18px', padding: '16px', border: '1px solid #f1f5f9' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+                    <History size={16} color="#0f172a" />
+                    <span style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 700 }}>HASIL FILTER</span>
+                  </div>
+                  <p style={{ fontSize: '24px', fontWeight: 800, color: '#0f172a', margin: 0 }}>{filteredOrders.length}</p>
+                </div>
+                <div style={{ backgroundColor: 'white', borderRadius: '18px', padding: '16px', border: '1px solid #f1f5f9' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+                    <BadgeCheck size={16} color="#16a34a" />
+                    <span style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 700 }}>OMZET TAMPIL</span>
+                  </div>
+                  <p style={{ fontSize: '20px', fontWeight: 800, color: '#0f172a', margin: 0 }}>Rp {formatRupiah(filteredRevenue)}</p>
+                </div>
+              </div>
+
+              <div style={{ backgroundColor: 'white', borderRadius: '24px', padding: '24px', border: '1px solid #f1f5f9', marginBottom: '20px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '18px' }}>
                   <div>
-                    <p style={{ fontSize: '10px', fontWeight: 800, color: '#4472c4', margin: '0 0 16px 0', letterSpacing: '0.5px' }}>SNACKS</p>
-                    <p style={{ fontSize: '12px', color: '#94a3b8', margin: '0 0 4px 0' }}>Snacks</p>
-                    <p style={{ fontSize: '14px', fontWeight: 800, color: '#0f172a', margin: 0 }}>Rp {formatCompact(categoryRevenue.SNACKS)}</p>
+                    <h3 style={{ fontSize: '17px', fontWeight: 800, color: '#0f172a', margin: 0 }}>Riwayat Orders</h3>
+                    <p style={{ fontSize: '12px', color: '#64748b', margin: '4px 0 0' }}>Seluruh transaksi yang tersimpan di Firestore</p>
                   </div>
+                  <BadgeCheck size={18} color="#16a34a" />
                 </div>
-              </div>
 
-              {/* Grafik Pemasukan Bulanan */}
-              <div style={{ backgroundColor: 'white', borderRadius: '16px', padding: '20px', border: '1px solid #f1f5f9', boxShadow: '0 2px 4px rgba(0,0,0,0.02)', marginBottom: '24px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-                  <h3 style={{ fontSize: '14px', fontWeight: 700, color: '#0f172a', margin: 0 }}>📊 Grafik Pemasukan Bulanan</h3>
-                  <span style={{ fontSize: '11px', color: '#ea580c', fontWeight: 700, backgroundColor: '#fff7ed', padding: '4px 10px', borderRadius: '12px' }}>12 Bulan</span>
+                <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr 1fr', gap: '12px', marginBottom: '18px' }}>
+                  <input
+                    value={orderSearch}
+                    onChange={e => {
+                      setOrderSearch(e.target.value);
+                      setOrdersPage(1);
+                    }}
+                    placeholder="Cari ID order atau meja..."
+                    style={{ width: '100%', padding: '12px 14px', borderRadius: '12px', border: '1px solid #e2e8f0', outline: 'none', fontSize: '13px' }}
+                  />
+                  <select
+                    value={orderStatusFilter}
+                    onChange={e => {
+                      setOrderStatusFilter(e.target.value as 'Semua' | Order['status']);
+                      setOrdersPage(1);
+                    }}
+                    style={{ width: '100%', padding: '12px 14px', borderRadius: '12px', border: '1px solid #e2e8f0', outline: 'none', fontSize: '13px', backgroundColor: 'white' }}
+                  >
+                    <option value="Semua">Semua Status</option>
+                    <option value="Menunggu Pembayaran">Menunggu Pembayaran</option>
+                    <option value="Lunas/Diproses">Lunas/Diproses</option>
+                    <option value="Selesai">Selesai</option>
+                    <option value="Batal">Batal</option>
+                  </select>
+                  <select
+                    value={orderPaymentFilter}
+                    onChange={e => {
+                      setOrderPaymentFilter(e.target.value as 'Semua' | 'Cash' | 'QRIS');
+                      setOrdersPage(1);
+                    }}
+                    style={{ width: '100%', padding: '12px 14px', borderRadius: '12px', border: '1px solid #e2e8f0', outline: 'none', fontSize: '13px', backgroundColor: 'white' }}
+                  >
+                    <option value="Semua">Semua Pembayaran</option>
+                    <option value="Cash">Cash</option>
+                    <option value="QRIS">QRIS</option>
+                  </select>
                 </div>
-                {/* Bar chart area */}
-                <div style={{ display: 'flex', alignItems: 'flex-end', gap: '5px', height: '120px', paddingBottom: '28px', position: 'relative', overflowX: 'auto' }}>
-                  {monthlyRevenue.map((m, idx) => {
-                    const heightPct = maxMonthlyRevenue > 0 ? (m.value / maxMonthlyRevenue) * 100 : 0;
-                    const isCurrentMonth = idx === monthlyRevenue.length - 1;
-                    return (
-                      <div key={idx} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: '0 0 auto', width: '28px' }} title={`Rp ${m.value.toLocaleString('id-ID')}`}>
-                        <div
-                          style={{
-                            width: '100%',
-                            height: `${Math.max(heightPct, 4)}%`,
-                            backgroundColor: isCurrentMonth ? '#ea580c' : '#fed7aa',
-                            borderRadius: '4px 4px 0 0',
-                            transition: 'height 0.4s ease',
-                            position: 'relative',
-                            cursor: 'pointer',
-                            minHeight: '4px'
-                          }}
-                        >
-                          {m.value > 0 && (
-                            <div style={{
-                              position: 'absolute', top: '-20px', left: '50%', transform: 'translateX(-50%)',
-                              fontSize: '8px', fontWeight: 700, color: isCurrentMonth ? '#ea580c' : '#94a3b8',
-                              whiteSpace: 'nowrap'
-                            }}>
-                              {m.value >= 1000000 ? `${(m.value/1000000).toFixed(1)}jt` : m.value >= 1000 ? `${(m.value/1000).toFixed(0)}rb` : `${m.value}`}
-                            </div>
-                          )}
-                        </div>
-                        <span style={{ fontSize: '8px', color: isCurrentMonth ? '#ea580c' : '#94a3b8', fontWeight: isCurrentMonth ? 800 : 500, marginTop: '6px', textAlign: 'center' }}>{m.label}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px', paddingTop: '12px', borderTop: '1px dashed #f1f5f9' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <div style={{ width: '10px', height: '10px', backgroundColor: '#ea580c', borderRadius: '2px' }}></div>
-                    <span style={{ fontSize: '10px', color: '#64748b', fontWeight: 600 }}>Bulan Ini</span>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <div style={{ width: '10px', height: '10px', backgroundColor: '#fed7aa', borderRadius: '2px' }}></div>
-                    <span style={{ fontSize: '10px', color: '#64748b', fontWeight: 600 }}>Bulan Lalu</span>
-                  </div>
-                </div>
-              </div>
 
-              {/* Menu Terlaris */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                <h3 style={{ fontSize: '16px', fontWeight: 700, color: '#0f172a', margin: 0 }}>Menu Terlaris</h3>
-                <span style={{ fontSize: '11px', color: '#ea580c', fontWeight: 700 }}>Top 5</span>
-              </div>
-              <div style={{ backgroundColor: 'white', borderRadius: '16px', padding: '20px 20px 8px 20px', border: '1px solid #f1f5f9', boxShadow: '0 2px 4px rgba(0,0,0,0.02)', marginBottom: '24px' }}>
-                {topMenus.length === 0 ? (
-                  <p style={{ fontSize: '13px', color: '#64748b', textAlign: 'center', marginBottom: '12px' }}>Belum ada data penjualan</p>
-                ) : (
-                  topMenus.map((menu, idx) => (
-                    <div key={idx} style={{ marginBottom: '16px' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
-                        <div>
-                          <p style={{ fontSize: '14px', fontWeight: 700, color: '#0f172a', margin: '0 0 4px 0' }}>{menu.name}</p>
-                          <p style={{ fontSize: '10px', color: '#94a3b8', margin: 0, fontWeight: 600, textTransform: 'uppercase' }}>{menu.category} • {menu.qty} SOLD</p>
-                        </div>
-                        <p style={{ fontSize: '14px', fontWeight: 700, color: '#1e293b', margin: 0 }}>Rp {menu.revenue.toLocaleString('id-ID')}</p>
-                      </div>
-                      <div style={{ width: '100%', height: '6px', backgroundColor: '#f1f5f9', borderRadius: '3px', overflow: 'hidden' }}>
-                        <div style={{ width: `${(menu.qty / maxMenuQty) * 100}%`, height: '100%', backgroundColor: ['#ea580c', '#f97316', '#fdba74', '#fed7aa', '#ffedd5'][idx] || '#ffedd5', borderRadius: '3px' }}></div>
-                      </div>
+                <div style={{ overflowX: 'auto', border: '1px solid #f1f5f9', borderRadius: '18px' }}>
+                  {filteredOrders.length > 0 ? (
+                    <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '1180px', backgroundColor: 'white' }}>
+                      <thead>
+                        <tr style={{ backgroundColor: '#f8fafc' }}>
+                          <th style={{ textAlign: 'left', padding: '14px 16px', fontSize: '11px', color: '#64748b', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px' }}>ID Order</th>
+                          <th style={{ textAlign: 'left', padding: '14px 16px', fontSize: '11px', color: '#64748b', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Meja</th>
+                          <th style={{ textAlign: 'left', padding: '14px 16px', fontSize: '11px', color: '#64748b', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Detail Transaksi</th>
+                          <th style={{ textAlign: 'left', padding: '14px 16px', fontSize: '11px', color: '#64748b', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Waktu</th>
+                          <th style={{ textAlign: 'left', padding: '14px 16px', fontSize: '11px', color: '#64748b', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Pembayaran</th>
+                          <th style={{ textAlign: 'left', padding: '14px 16px', fontSize: '11px', color: '#64748b', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Status</th>
+                          <th style={{ textAlign: 'left', padding: '14px 16px', fontSize: '11px', color: '#64748b', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Aksi</th>
+                          <th style={{ textAlign: 'right', padding: '14px 16px', fontSize: '11px', color: '#64748b', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Total</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {paginatedOrders.map(order => {
+                          const statusColor = getOrderStatusColor(order.status);
+                          const itemCount = order.items.reduce((sum, item) => sum + item.quantity, 0);
+                          const itemSummary = order.items.map(item => {
+                            const menu = menus.find(entry => entry.id === item.menuId);
+                            const variantSummary = (item.selectedVariants || []).map(variant => variant.optionName).join(', ');
+                            return `${item.quantity}x ${menu?.name || item.menuId}${variantSummary ? ` (${variantSummary})` : ''}`;
+                          }).join(' • ');
+                          return (
+                            <tr key={order.id} style={{ borderTop: '1px solid #f1f5f9' }}>
+                              <td style={{ padding: '14px 16px', verticalAlign: 'top' }}>
+                                <p style={{ fontSize: '13px', color: '#0f172a', fontWeight: 800, margin: 0 }}>{order.id}</p>
+                                <p style={{ fontSize: '11px', color: '#94a3b8', margin: '6px 0 0' }}>{itemCount} item • Token transaksi tersimpan</p>
+                              </td>
+                              <td style={{ padding: '14px 16px', verticalAlign: 'top' }}>
+                                <p style={{ fontSize: '13px', color: '#334155', fontWeight: 700, margin: 0 }}>{getTableLabel(order.tableId)}</p>
+                                <p style={{ fontSize: '11px', color: '#94a3b8', margin: '6px 0 0' }}>Table ID: {order.tableId}</p>
+                              </td>
+                              <td style={{ padding: '14px 16px', verticalAlign: 'top', minWidth: '280px' }}>
+                                <p style={{ fontSize: '13px', color: '#0f172a', fontWeight: 700, margin: 0 }}>{itemSummary || 'Tidak ada rincian item'}</p>
+                                <p style={{ fontSize: '11px', color: '#94a3b8', margin: '6px 0 0' }}>
+                                  {order.items.length} baris menu • {(order.items.some(item => (item.selectedVariants || []).length > 0)) ? 'Terdapat varian tambahan' : 'Tanpa varian tambahan'}
+                                </p>
+                              </td>
+                              <td style={{ padding: '14px 16px', verticalAlign: 'top' }}>
+                                <p style={{ fontSize: '13px', color: '#0f172a', fontWeight: 700, margin: 0 }}>{formatOrderDate(order.createdAt)}</p>
+                                <p style={{ fontSize: '11px', color: '#94a3b8', margin: '6px 0 0' }}>
+                                  {order.completedAt ? `Selesai: ${formatOrderDate(order.completedAt)}` : 'Belum ada waktu selesai'}
+                                </p>
+                              </td>
+                              <td style={{ padding: '14px 16px', verticalAlign: 'top' }}>
+                                <p style={{ fontSize: '13px', color: '#0f172a', fontWeight: 700, margin: 0 }}>{order.paymentMethod || 'Cash'}</p>
+                                <p style={{ fontSize: '11px', color: '#94a3b8', margin: '6px 0 0' }}>
+                                  {order.paymentMethod === 'QRIS' ? 'Pembayaran digital / scan QR' : 'Pembayaran tunai di kasir'}
+                                </p>
+                              </td>
+                              <td style={{ padding: '14px 16px' }}>
+                                <span style={{ display: 'inline-flex', fontSize: '11px', fontWeight: 800, padding: '6px 10px', borderRadius: '999px', backgroundColor: statusColor.bg, color: statusColor.text }}>
+                                  {order.status}
+                                </span>
+                              </td>
+                              <td style={{ padding: '14px 16px' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                                  <select
+                                    value={orderStatusDrafts[order.id] || order.status}
+                                    onChange={(e) => setOrderStatusDrafts(prev => ({ ...prev, [order.id]: e.target.value as Order['status'] }))}
+                                    style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid #e2e8f0', backgroundColor: 'white', fontSize: '12px', color: '#0f172a', outline: 'none' }}
+                                  >
+                                    <option value="Menunggu Pembayaran">Menunggu Pembayaran</option>
+                                    <option value="Lunas/Diproses">Lunas/Diproses</option>
+                                    <option value="Selesai">Selesai</option>
+                                    <option value="Batal">Batal</option>
+                                  </select>
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleAdminOrderStatusChange(order.id)}
+                                    disabled={(orderStatusDrafts[order.id] || order.status) === order.status}
+                                    style={{
+                                      padding: '10px 12px',
+                                      borderRadius: '10px',
+                                      border: 'none',
+                                      backgroundColor: (orderStatusDrafts[order.id] || order.status) === order.status ? '#e2e8f0' : '#0f172a',
+                                      color: (orderStatusDrafts[order.id] || order.status) === order.status ? '#94a3b8' : 'white',
+                                      fontSize: '12px',
+                                      fontWeight: 700,
+                                      cursor: (orderStatusDrafts[order.id] || order.status) === order.status ? 'not-allowed' : 'pointer',
+                                    }}
+                                  >
+                                    Simpan
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleDeleteOrder(order.id)}
+                                    style={{
+                                      padding: '10px 12px',
+                                      borderRadius: '10px',
+                                      border: '1px solid #fecaca',
+                                      backgroundColor: '#fef2f2',
+                                      color: '#dc2626',
+                                      fontSize: '12px',
+                                      fontWeight: 700,
+                                      cursor: 'pointer',
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      gap: '6px',
+                                    }}
+                                  >
+                                    <Trash2 size={14} />
+                                    Hapus
+                                  </button>
+                                </div>
+                              </td>
+                              <td style={{ padding: '14px 16px', textAlign: 'right', verticalAlign: 'top' }}>
+                                <p style={{ fontSize: '14px', color: '#0f172a', fontWeight: 800, margin: 0 }}>Rp {formatRupiah(order.totalAmount)}</p>
+                                <p style={{ fontSize: '11px', color: '#94a3b8', margin: '6px 0 0' }}>
+                                  Rata-rata item: Rp {formatRupiah(itemCount > 0 ? order.totalAmount / itemCount : order.totalAmount)}
+                                </p>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <div style={{ padding: '24px', textAlign: 'center', backgroundColor: '#f8fafc', color: '#64748b', fontSize: '13px', fontWeight: 600 }}>
+                      Tidak ada transaksi yang cocok dengan filter saat ini.
                     </div>
-                  ))
-                )}
-              </div>
+                  )}
+                </div>
 
-              {/* Daftar Transaksi */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                <h3 style={{ fontSize: '16px', fontWeight: 700, color: '#0f172a', margin: 0 }}>Daftar Transaksi</h3>
-                <span style={{ fontSize: '12px', color: '#ea580c', fontWeight: 600 }}>Lihat Semua</span>
-              </div>
-              <div style={{ backgroundColor: 'white', borderRadius: '16px', border: '1px solid #f1f5f9', boxShadow: '0 2px 4px rgba(0,0,0,0.02)', overflow: 'hidden' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                  <thead>
-                    <tr style={{ borderBottom: '1px solid #f1f5f9' }}>
-                      <th style={{ padding: '16px 12px', textAlign: 'left', fontSize: '10px', fontWeight: 800, color: '#64748b', letterSpacing: '0.5px' }}>WAKTU</th>
-                      <th style={{ padding: '16px 12px', textAlign: 'left', fontSize: '10px', fontWeight: 800, color: '#64748b', letterSpacing: '0.5px' }}>MEJA</th>
-                      <th style={{ padding: '16px 12px', textAlign: 'left', fontSize: '10px', fontWeight: 800, color: '#64748b', letterSpacing: '0.5px' }}>METODE</th>
-                      <th style={{ padding: '16px 12px', textAlign: 'right', fontSize: '10px', fontWeight: 800, color: '#64748b', letterSpacing: '0.5px' }}>TOTAL</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {completedOrders.length === 0 ? (
-                      <tr>
-                        <td colSpan={4} style={{ padding: '24px', textAlign: 'center', fontSize: '13px', color: '#94a3b8' }}>Belum ada transaksi</td>
-                      </tr>
-                    ) : (
-                       completedOrders.slice(0, 5).map(order => {
-                         const table = tables.find(t => t.id === order.tableId);
-                         const isQris = order.paymentMethod === 'QRIS';
-                         const timeStr = new Date(order.createdAt).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }).replace('.', ':');
-                         return (
-                           <tr key={order.id} style={{ borderBottom: '1px solid #f8fafc' }}>
-                             <td style={{ padding: '16px 12px', fontSize: '12px', color: '#64748b', fontWeight: 500 }}>{timeStr}</td>
-                             <td style={{ padding: '16px 12px', fontSize: '13px', color: '#0f172a', fontWeight: 700 }}>T-{table?.number.toString().padStart(2, '0') || '??'}</td>
-                             <td style={{ padding: '16px 12px' }}>
-                               <span style={{ display: 'inline-block', backgroundColor: isQris ? '#e0e7ff' : '#dcfce7', color: isQris ? '#4f46e5' : '#16a34a', padding: '4px 8px', borderRadius: '12px', fontSize: '10px', fontWeight: 700 }}>
-                                 {order.paymentMethod || 'CASH'}
-                               </span>
-                             </td>
-                             <td style={{ padding: '16px 12px', textAlign: 'right', fontSize: '13px', color: '#0f172a', fontWeight: 800 }}>
-                               {order.totalAmount.toLocaleString('id-ID')}
-                             </td>
-                           </tr>
-                         )
-                       })
-                    )}
-                  </tbody>
-                </table>
+                {filteredOrders.length > 0 && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', marginTop: '16px', flexWrap: 'wrap' }}>
+                    <p style={{ fontSize: '12px', color: '#64748b', margin: 0 }}>
+                      Menampilkan {((currentOrdersPage - 1) * ordersPerPage) + 1}-{Math.min(currentOrdersPage * ordersPerPage, filteredOrders.length)} dari {filteredOrders.length} orders
+                    </p>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <button
+                        type="button"
+                        onClick={() => setOrdersPage(prev => Math.max(1, prev - 1))}
+                        disabled={currentOrdersPage === 1}
+                        style={{ padding: '10px 14px', borderRadius: '10px', border: '1px solid #e2e8f0', backgroundColor: currentOrdersPage === 1 ? '#f8fafc' : 'white', color: currentOrdersPage === 1 ? '#94a3b8' : '#0f172a', fontWeight: 700, cursor: currentOrdersPage === 1 ? 'not-allowed' : 'pointer' }}
+                      >
+                        Sebelumnya
+                      </button>
+                      <span style={{ fontSize: '12px', fontWeight: 700, color: '#475569' }}>
+                        Halaman {currentOrdersPage} / {totalOrderPages}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setOrdersPage(prev => Math.min(totalOrderPages, prev + 1))}
+                        disabled={currentOrdersPage === totalOrderPages}
+                        style={{ padding: '10px 14px', borderRadius: '10px', border: '1px solid #e2e8f0', backgroundColor: currentOrdersPage === totalOrderPages ? '#f8fafc' : 'white', color: currentOrdersPage === totalOrderPages ? '#94a3b8' : '#0f172a', fontWeight: 700, cursor: currentOrdersPage === totalOrderPages ? 'not-allowed' : 'pointer' }}
+                      >
+                        Berikutnya
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}
+
         </div>
 
-        {/* Bottom Navigation */}
+        {/* Bottom Nav */}
         <div style={{ position: 'fixed', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: '100%', maxWidth: '448px', backgroundColor: '#ffffff', display: 'flex', justifyContent: 'space-around', alignItems: 'center', padding: '12px 0 20px', borderTop: '1px solid #e5e7eb', zIndex: 50 }}>
-          <div onClick={() => setActiveTab('dashboard')} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', color: activeTab === 'dashboard' ? '#ea580c' : '#94a3b8', cursor: 'pointer' }}>
-            <Home size={22} color={activeTab === 'dashboard' ? '#ea580c' : '#94a3b8'} style={{ strokeWidth: activeTab === 'dashboard' ? 2.5 : 2 }} />
-            <span style={{ fontSize: '10px', fontWeight: activeTab === 'dashboard' ? 800 : 700, letterSpacing: '0.5px' }}>HOME</span>
+          <div onClick={() => setActiveTab('dashboard')} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', cursor: 'pointer' }}>
+            <Home size={22} color={activeTab === 'dashboard' ? '#ea580c' : '#94a3b8'} strokeWidth={activeTab === 'dashboard' ? 2.5 : 2} />
+            <span style={{ fontSize: '10px', fontWeight: 700, color: activeTab === 'dashboard' ? '#ea580c' : '#94a3b8' }}>DASHBOARD</span>
           </div>
-          <div onClick={() => setActiveTab('menu')} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', color: activeTab === 'menu' ? '#ea580c' : '#94a3b8', cursor: 'pointer' }}>
-            <FileText size={22} color={activeTab === 'menu' ? '#ea580c' : '#94a3b8'} style={{ strokeWidth: activeTab === 'menu' ? 2.5 : 2 }} />
-            <span style={{ fontSize: '10px', fontWeight: activeTab === 'menu' ? 800 : 700, letterSpacing: '0.5px' }}>MENU</span>
+          <div onClick={() => setActiveTab('menu')} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', cursor: 'pointer' }}>
+            <FileText size={22} color={activeTab === 'menu' ? '#ea580c' : '#94a3b8'} strokeWidth={activeTab === 'menu' ? 2.5 : 2} />
+            <span style={{ fontSize: '10px', fontWeight: 700, color: activeTab === 'menu' ? '#ea580c' : '#94a3b8' }}>MENU</span>
           </div>
-          <div onClick={() => setActiveTab('laporan')} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', color: activeTab === 'laporan' ? '#ea580c' : '#94a3b8', cursor: 'pointer' }}>
-            <BarChart3 size={22} color={activeTab === 'laporan' ? '#ea580c' : '#94a3b8'} style={{ strokeWidth: activeTab === 'laporan' ? 2.5 : 2 }} />
-            <span style={{ fontSize: '10px', fontWeight: activeTab === 'laporan' ? 800 : 700, letterSpacing: '0.5px' }}>LAPORAN</span>
+          <div onClick={() => setActiveTab('table')} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', cursor: 'pointer' }}>
+            <QrCode size={22} color={activeTab === 'table' ? '#ea580c' : '#94a3b8'} strokeWidth={activeTab === 'table' ? 2.5 : 2} />
+            <span style={{ fontSize: '10px', fontWeight: 700, color: activeTab === 'table' ? '#ea580c' : '#94a3b8' }}>MEJA</span>
           </div>
-          <div onClick={() => window.location.href = '/kasir'} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', color: '#94a3b8', cursor: 'pointer' }}>
-            <Settings size={22} color="#94a3b8" style={{ strokeWidth: 2 }} />
-            <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.5px' }}>KASIR</span>
+          <div onClick={() => setActiveTab('laporan')} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', cursor: 'pointer' }}>
+            <History size={22} color={activeTab === 'laporan' ? '#ea580c' : '#94a3b8'} strokeWidth={activeTab === 'laporan' ? 2.5 : 2} />
+            <span style={{ fontSize: '10px', fontWeight: 700, color: activeTab === 'laporan' ? '#ea580c' : '#94a3b8' }}>RIWAYAT</span>
+          </div>
+          <div onClick={() => setActiveTab('account')} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', cursor: 'pointer' }}>
+            <KeyRound size={22} color={activeTab === 'account' ? '#ea580c' : '#94a3b8'} strokeWidth={activeTab === 'account' ? 2.5 : 2} />
+            <span style={{ fontSize: '10px', fontWeight: 700, color: activeTab === 'account' ? '#ea580c' : '#94a3b8' }}>ACCOUNT</span>
           </div>
         </div>
 
-        {/* Modal Overlay Inline Styles (Overriding global) */}
+        {/* Modals Menu & Config */}
         {isMenuModalOpen && (
           <div style={{ position: 'fixed', inset: 0, zIndex: 60, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(15, 23, 42, 0.6)', padding: '20px' }}>
-            <div style={{ width: '100%', maxWidth: '380px', backgroundColor: 'white', borderRadius: '24px', padding: '24px', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1)' }}>
-              <h2 style={{ fontSize: '18px', fontWeight: 700, margin: '0 0 20px 0', color: '#0f172a' }}>{editingMenu ? 'Edit Menu' : 'Tambah Menu'}</h2>
+            <div style={{ width: '100%', maxWidth: '400px', backgroundColor: 'white', borderRadius: '24px', padding: '24px', maxHeight: '90vh', overflow: 'auto' }}>
+              <h2 style={{ fontSize: '20px', fontWeight: 800, margin: '0 0 20px 0', color: '#0f172a' }}>{editingMenu ? 'Edit Menu' : 'Tambah Menu'}</h2>
               <form onSubmit={handleSaveMenu} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                 <div>
-                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#64748b', marginBottom: '6px' }}>Nama Menu</label>
-                  <input required name="name" type="text" defaultValue={editingMenu?.name} placeholder="Misal: Es Kopi Susu" style={{ width: '100%', padding: '12px 16px', borderRadius: '12px', border: '1px solid #e2e8f0', backgroundColor: '#f8fafc', fontSize: '14px', color: '#0f172a', outline: 'none' }} />
+                   <label style={{ display: 'block', fontSize: '13px', fontWeight: 700, color: '#64748b', marginBottom: '6px' }}>Nama Menu</label>
+                   <input required name="name" defaultValue={editingMenu?.name} placeholder="Sebutkan namaya..." style={{ width: '100%', padding: '14px', borderRadius: '12px', border: '1px solid #e2e8f0', outline: 'none', fontSize: '14px' }} />
                 </div>
                 <div>
-                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#64748b', marginBottom: '6px' }}>Harga (Rp)</label>
-                  <input required name="price" type="number" defaultValue={editingMenu?.price} placeholder="Misal: 15000" style={{ width: '100%', padding: '12px 16px', borderRadius: '12px', border: '1px solid #e2e8f0', backgroundColor: '#f8fafc', fontSize: '14px', color: '#0f172a', outline: 'none' }} />
+                   <label style={{ display: 'block', fontSize: '13px', fontWeight: 700, color: '#64748b', marginBottom: '6px' }}>Harga Dasar (Rp)</label>
+                   <input required name="price" type="number" defaultValue={editingMenu?.price} placeholder="Misal: 15000" style={{ width: '100%', padding: '14px', borderRadius: '12px', border: '1px solid #e2e8f0', outline: 'none', fontSize: '14px' }} />
                 </div>
                 <div>
-                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#64748b', marginBottom: '6px' }}>Kategori</label>
-                  <select name="category" defaultValue={editingMenu?.category || 'Minuman'} style={{ width: '100%', padding: '12px 16px', borderRadius: '12px', border: '1px solid #e2e8f0', backgroundColor: '#f8fafc', fontSize: '14px', color: '#0f172a', outline: 'none', appearance: 'none' }}>
-                    <option value="Minuman">Minuman</option>
-                    <option value="Makanan">Makanan</option>
-                    <option value="Snack">Snack</option>
-                  </select>
+                   <label style={{ display: 'block', fontSize: '13px', fontWeight: 700, color: '#64748b', marginBottom: '6px' }}>Kategori</label>
+                   <select name="category" defaultValue={editingMenu?.category || menuCategories[0] || 'Minuman'} style={{ width: '100%', padding: '14px', borderRadius: '12px', border: '1px solid #e2e8f0', backgroundColor: 'white', outline: 'none', fontSize: '14px' }}>
+                      {menuCategories.map(category => (
+                        <option key={category} value={category}>{category}</option>
+                      ))}
+                   </select>
                 </div>
                 <div>
-                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#64748b', marginBottom: '6px' }}>URL Gambar Lengkap</label>
-                  <input name="image" type="url" defaultValue={editingMenu?.image} placeholder="https://..." style={{ width: '100%', padding: '12px 16px', borderRadius: '12px', border: '1px solid #e2e8f0', backgroundColor: '#f8fafc', fontSize: '14px', color: '#0f172a', outline: 'none' }} />
+                   <label style={{ display: 'block', fontSize: '13px', fontWeight: 700, color: '#64748b', marginBottom: '6px' }}>Deskripsi Produk</label>
+                   <textarea name="description" defaultValue={editingMenu?.description} placeholder="Jelaskan rasanya agar pembeli tertarik..." rows={3} style={{ width: '100%', padding: '14px', borderRadius: '12px', border: '1px solid #e2e8f0', outline: 'none', fontSize: '14px', resize: 'none' }}></textarea>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: '4px', backgroundColor: '#fff7ed', padding: '12px', borderRadius: '12px', border: '1px solid #fdba74' }}>
-                  <input type="checkbox" name="available" id="available" defaultChecked={editingMenu ? editingMenu.available : true} style={{ width: '18px', height: '18px', accentColor: '#ea580c' }} />
-                  <label htmlFor="available" style={{ fontSize: '13px', fontWeight: 600, color: '#ea580c' }}>Stok Tersedia</label>
+                <div>
+                   <label style={{ display: 'block', fontSize: '13px', fontWeight: 700, color: '#64748b', marginBottom: '6px' }}>URL Gambar Lengkap</label>
+                   <input name="image" type="url" defaultValue={editingMenu?.image} placeholder="https://unsplash.com/..." style={{ width: '100%', padding: '14px', borderRadius: '12px', border: '1px solid #e2e8f0', outline: 'none', fontSize: '14px' }} />
                 </div>
-                <div style={{ display: 'flex', gap: '12px', marginTop: '16px' }}>
-                  <button type="button" onClick={() => setIsMenuModalOpen(false)} style={{ flex: 1, padding: '14px', borderRadius: '12px', backgroundColor: '#f1f5f9', color: '#64748b', fontWeight: 700, border: 'none', cursor: 'pointer', fontSize: '14px' }}>Batal</button>
-                  <button type="submit" style={{ flex: 1, padding: '14px', borderRadius: '12px', backgroundColor: '#ea580c', color: 'white', fontWeight: 700, border: 'none', cursor: 'pointer', fontSize: '14px' }}>Simpan</button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', backgroundColor: '#f8fafc', padding: '12px', borderRadius: '12px' }}>
+                   <input type="checkbox" name="available" id="m-available" defaultChecked={editingMenu ? editingMenu.available : true} />
+                   <label htmlFor="m-available" style={{ fontSize: '13px', fontWeight: 700, color: '#64748b' }}>Stok Tersedia di Kasir</label>
+                </div>
+                <div style={{ display: 'flex', gap: '12px', marginTop: '10px' }}>
+                   <button type="button" onClick={() => setIsMenuModalOpen(false)} style={{ flex: 1, padding: '14px', borderRadius: '12px', backgroundColor: '#f1f5f9', color: '#64748b', border: 'none', fontWeight: 700, cursor: 'pointer' }}>Batal</button>
+                   <button type="submit" style={{ flex: 1, padding: '14px', borderRadius: '12px', backgroundColor: '#ea580c', color: 'white', border: 'none', fontWeight: 700, cursor: 'pointer' }}>Simpan Menu</button>
                 </div>
               </form>
             </div>
           </div>
         )}
-        {/* Modal Sheet Configuration */}
+
         {isSheetModalOpen && (
           <div style={{ position: 'fixed', inset: 0, zIndex: 60, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(15, 23, 42, 0.6)', padding: '20px' }}>
-            <div style={{ width: '100%', maxWidth: '400px', backgroundColor: 'white', borderRadius: '24px', padding: '24px', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)' }}>
-              <h2 style={{ fontSize: '18px', fontWeight: 700, margin: '0 0 8px 0', color: '#0f172a' }}>Koneksi Google Sheet</h2>
-              <p style={{ fontSize: '12px', color: '#64748b', marginBottom: '20px' }}>Hubungkan laporan otomatis ke spreadsheet Anda.</p>
-              <form onSubmit={handleSaveSheetConfig} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                <div>
-                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#64748b', marginBottom: '6px' }}>URL Spreadsheet Pembacaan (Google Sheet URL)</label>
-                  <input name="pubUrl" type="url" defaultValue={sheetPubUrl} placeholder="https://docs.google.com/spreadsheets/d/..." style={{ width: '100%', padding: '12px 16px', borderRadius: '12px', border: '1px solid #e2e8f0', backgroundColor: '#f8fafc', fontSize: '12px', color: '#0f172a', outline: 'none' }} />
-                  <p style={{ fontSize: '10px', color: '#94a3b8', marginTop: '6px' }}>Ini digunakan untuk mendownload PDF bulanan/harian.</p>
-                </div>
-                <div>
-                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#64748b', marginBottom: '6px' }}>Web App URL (Apps Script)</label>
-                  <input name="appUrl" type="url" defaultValue={sheetAppUrl} placeholder="https://script.google.com/macros/s/.../exec" style={{ width: '100%', padding: '12px 16px', borderRadius: '12px', border: '1px solid #e2e8f0', backgroundColor: '#f8fafc', fontSize: '12px', color: '#0f172a', outline: 'none' }} />
-                  <p style={{ fontSize: '10px', color: '#94a3b8', marginTop: '6px' }}>Diperlukan agar setiap pembayaran selesai bisa sinkronisasi ke spreadsheet.</p>
-                </div>
-                <div style={{ display: 'flex', gap: '12px', marginTop: '16px' }}>
-                  <button type="button" onClick={() => setIsSheetModalOpen(false)} style={{ flex: 1, padding: '14px', borderRadius: '12px', backgroundColor: '#f1f5f9', color: '#64748b', fontWeight: 700, border: 'none', cursor: 'pointer', fontSize: '14px' }}>Batal</button>
-                  <button type="submit" style={{ flex: 1, padding: '14px', borderRadius: '12px', backgroundColor: '#ea580c', color: 'white', fontWeight: 700, border: 'none', cursor: 'pointer', fontSize: '14px' }}>Simpan Konfigurasi</button>
-                </div>
+            <div style={{ width: '100%', maxWidth: '400px', backgroundColor: 'white', borderRadius: '24px', padding: '24px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
+                 <h2 style={{ fontSize: '20px', fontWeight: 800, margin: 0, color: '#0f172a' }}>Konfigurasi QRIS</h2>
+                 <QrCode size={24} color="#ea580c" />
+              </div>
+              <p style={{ fontSize: '12px', color: '#64748b', marginBottom: '24px' }}>Semua pengaturan ini disimpan di Firestore, bukan Realtime Database.</p>
+              <form onSubmit={handleSaveConfig} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                 <div>
+                    <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#0f172a', marginBottom: '6px' }}>URL Google Apps Script</label>
+                    <input type="url" value={sheetAppUrl} onChange={e => setSheetAppUrl(e.target.value)} placeholder="https://script.google.com/macros/..." style={{ width: '100%', padding: '14px', borderRadius: '12px', border: '1px solid #e2e8f0', fontSize: '13px', outline: 'none' }} />
+                    <p style={{ fontSize: '10px', color: '#94a3b8', marginTop: '6px', lineHeight: 1.4 }}>Dipakai saat order yang sudah lunas dikirim otomatis dari Firestore ke Google Sheet.</p>
+                 </div>
+                 <div>
+                    <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#0f172a', marginBottom: '6px' }}>URL Publish Google Sheet</label>
+                    <input type="url" value={sheetPubUrl} onChange={e => setSheetPubUrl(e.target.value)} placeholder="https://docs.google.com/spreadsheets/..." style={{ width: '100%', padding: '14px', borderRadius: '12px', border: '1px solid #e2e8f0', fontSize: '13px', outline: 'none' }} />
+                    <p style={{ fontSize: '10px', color: '#94a3b8', marginTop: '6px', lineHeight: 1.4 }}>Opsional, untuk link publik spreadsheet jika ingin dibaca dari dashboard lain.</p>
+                 </div>
+                 <div>
+                    <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#0f172a', marginBottom: '6px' }}>Payload / String QRIS</label>
+                    <textarea value={qrisPayloadInput} onChange={e => setQrisPayloadInput(e.target.value)} placeholder="Masukkan string payload QRIS dari penyedia pembayaran..." rows={5} style={{ width: '100%', padding: '14px', borderRadius: '12px', border: '1px solid #e2e8f0', fontSize: '13px', outline: 'none', resize: 'vertical' }} />
+                    <p style={{ fontSize: '10px', color: '#94a3b8', marginTop: '6px', lineHeight: 1.4 }}>Tempel payload QRIS asli. Sistem akan membuat kode QR secara otomatis untuk buyer.</p>
+                 </div>
+                 {qrisPayloadInput && (
+                    <div style={{ padding: '12px', border: '1px solid #e2e8f0', borderRadius: '12px', textAlign: 'center' }}>
+                       <p style={{ fontSize: '10px', color: '#94a3b8', marginBottom: '8px' }}>Pratinjau QRIS:</p>
+                       <div style={{ width: '140px', height: '140px', margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'white', borderRadius: '12px' }}>
+                         <QRCodeSVG value={qrisPayloadInput} size={120} />
+                       </div>
+                    </div>
+                 )}
+                 <div style={{ display: 'flex', gap: '12px', marginTop: '16px' }}>
+                   <button type="button" onClick={() => setIsSheetModalOpen(false)} style={{ flex: 1, padding: '14px', borderRadius: '12px', backgroundColor: '#f1f5f9', color: '#64748b', border: 'none', fontWeight: 700, cursor: 'pointer' }}>Batal</button>
+                   <button type="submit" style={{ flex: 1, padding: '14px', borderRadius: '12px', backgroundColor: '#0f172a', color: 'white', border: 'none', fontWeight: 700, cursor: 'pointer' }}>Gunakan QRIS Ini</button>
+                 </div>
               </form>
             </div>
           </div>
@@ -746,23 +1754,23 @@ export default function Admin() {
         {/* Modal Konfirmasi Hapus Meja */}
         {tableToDelete && (
           <div style={{ position: 'fixed', inset: 0, zIndex: 60, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(15, 23, 42, 0.6)', padding: '20px' }}>
-            <div style={{ width: '100%', maxWidth: '320px', backgroundColor: 'white', borderRadius: '24px', padding: '24px', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)', textAlign: 'center' }}>
-              <div style={{ width: '48px', height: '48px', borderRadius: '50%', backgroundColor: '#fee2e2', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
-                <Trash2 size={24} color="#ef4444" />
-              </div>
-              <h2 style={{ fontSize: '18px', fontWeight: 800, margin: '0 0 8px 0', color: '#0f172a' }}>Hapus Meja?</h2>
-              <p style={{ fontSize: '14px', color: '#64748b', marginBottom: '24px' }}>
-                Anda yakin ingin menghapus <b>Meja {tableToDelete.number.toString().padStart(2, '0')}</b> beserta kodenya dari sistem? Tindakan ini tidak dapat dibatalkan.
-              </p>
-              <div style={{ display: 'flex', gap: '12px' }}>
-                <button type="button" onClick={() => setTableToDelete(null)} style={{ flex: 1, padding: '12px', borderRadius: '12px', backgroundColor: '#f1f5f9', color: '#64748b', fontWeight: 700, border: 'none', cursor: 'pointer', fontSize: '14px' }}>Batal</button>
-                <button type="button" onClick={executeDeleteTable} style={{ flex: 1, padding: '12px', borderRadius: '12px', backgroundColor: '#ef4444', color: 'white', fontWeight: 700, border: 'none', cursor: 'pointer', fontSize: '14px' }}>Ya, Hapus</button>
-              </div>
+            <div style={{ width: '100%', maxWidth: '300px', backgroundColor: 'white', borderRadius: '24px', padding: '24px', textAlign: 'center' }}>
+               <Trash2 size={40} color="#ef4444" style={{ margin: '0 auto 16px' }} />
+               <h3 style={{ fontSize: '18px', fontWeight: 800, color: '#0f172a', marginBottom: '8px' }}>Hapus Meja {tableToDelete.number}?</h3>
+               <p style={{ fontSize: '13px', color: '#64748b', marginBottom: '24px' }}>Data QR Code meja ini akan terhapus permanen dari sistem.</p>
+               <div style={{ display: 'flex', gap: '12px' }}>
+                  <button onClick={() => setTableToDelete(null)} style={{ flex: 1, padding: '12px', borderRadius: '10px', border: 'none', backgroundColor: '#f1f5f9', color: '#64748b', fontWeight: 700, cursor: 'pointer' }}>Batal</button>
+                  <button onClick={executeDeleteTable} style={{ flex: 1, padding: '12px', borderRadius: '10px', border: 'none', backgroundColor: '#ef4444', color: 'white', fontWeight: 700, cursor: 'pointer' }}>Ya, Hapus</button>
+               </div>
             </div>
           </div>
         )}
 
       </div>
+      <style>{`
+        .animate-fade-in { animation: fadeIn 0.3s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+      `}</style>
     </div>
   );
 }

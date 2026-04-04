@@ -1,0 +1,26 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isPublicDoc(docId) {
+      return docId in ['menus', 'tables', 'orders', 'publicSettings'];
+    }
+
+    function isPrivateDoc(docId) {
+      return docId in ['privateSettings', 'withdrawals'];
+    }
+
+    match /warkopDB/{docId} {
+      allow read, write: if isPublicDoc(docId);
+      allow read, write: if isPrivateDoc(docId) && isAuthenticated();
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

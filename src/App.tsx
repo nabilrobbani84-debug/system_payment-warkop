@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Link } from 'react-router-dom';
 import { initializeData } from './store/dataManager';
+import { FeedbackProvider } from './components/feedback/FeedbackProvider';
 import Buyer from './pages/Buyer';
 import Kasir from './pages/Kasir';
 import Admin from './pages/Admin';
@@ -39,14 +40,16 @@ function App() {
   }, []);
 
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<Home />} />
-        <Route path="/menu" element={<Buyer />} />
-        <Route path="/kasir" element={<Kasir />} />
-        <Route path="/admin" element={<Admin />} />
-      </Routes>
-    </BrowserRouter>
+    <FeedbackProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<Home />} />
+          <Route path="/menu" element={<Buyer />} />
+          <Route path="/kasir" element={<Kasir />} />
+          <Route path="/admin" element={<Admin />} />
+        </Routes>
+      </BrowserRouter>
+    </FeedbackProvider>
   );
 }
 
