@@ -1,6 +1,7 @@
 import { initializeApp } from 'firebase/app';
 import { getFirestore, doc, setDoc, getDoc, onSnapshot } from 'firebase/firestore';
-import { getAuth, GoogleAuthProvider, signInWithPopup, createUserWithEmailAndPassword, signInWithEmailAndPassword, sendPasswordResetEmail, signOut } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, signInWithPopup, createUserWithEmailAndPassword, signInWithEmailAndPassword, sendPasswordResetEmail, signOut, onAuthStateChanged } from 'firebase/auth';
+import { FIREBASE_CONFIG, hasFirebaseConfig } from '../config/firebase';
 
 // ==================== TYPES ====================
 export type MenuCategory = string;
@@ -121,16 +122,6 @@ const initialTables: Table[] = Array.from({ length: 8 }, (_, i) => ({
   capacity: 4
 }));
 
-// ==================== FIREBASE INIT ====================
-const FIREBASE_CONFIG = {
-  apiKey: "AIzaSyCBFNWa0ldE9R40UcHVVhYodlTUurXCnkw",
-  authDomain: "cloud-computing-22552.firebaseapp.com",
-  projectId: "cloud-computing-22552", // REQUIRED for Firestore
-  storageBucket: "cloud-computing-22552.firebasestorage.app",
-  messagingSenderId: "1077252898399",
-  appId: "1:1077252898399:web:1f3b54b389e5e52f6d65ea"
-};
-
 const app = initializeApp(FIREBASE_CONFIG);
 const db = getFirestore(app);
 const auth = getAuth(app);
@@ -153,6 +144,21 @@ interface GlobalState {
   withdrawalHistory: WithdrawalRecord[];
 }
 
+export interface FirestoreDocSyncState {
+  ready: boolean;
+  lastSyncedAt: string | null;
+  error: string | null;
+}
+
+export interface FirestoreSyncState {
+  menus: FirestoreDocSyncState;
+  tables: FirestoreDocSyncState;
+  orders: FirestoreDocSyncState;
+  publicSettings: FirestoreDocSyncState;
+  privateSettings: FirestoreDocSyncState;
+  withdrawals: FirestoreDocSyncState;
+}
+
 const defaultTaxSettings: TaxSettings = {
   enabled: true,
   rate: 10,
@@ -164,6 +170,21 @@ const defaultSecuritySettings: SecuritySettings = {
   adminAllowlist: [],
   cashierPinEnabled: false,
   cashierPin: '1234',
+};
+
+const createDefaultDocSyncState = (): FirestoreDocSyncState => ({
+  ready: false,
+  lastSyncedAt: null,
+  error: null,
+});
+
+const firestoreSyncState: FirestoreSyncState = {
+  menus: createDefaultDocSyncState(),
+  tables: createDefaultDocSyncState(),
+  orders: createDefaultDocSyncState(),
+  publicSettings: createDefaultDocSyncState(),
+  privateSettings: createDefaultDocSyncState(),
+  withdrawals: createDefaultDocSyncState(),
 };
 
 const state: GlobalState = {
@@ -192,6 +213,7 @@ const docRef = (docName: FirestoreDocName) => doc(db, 'warkopDB', docName);
 const writeQueue = new Map<FirestoreDocName, Promise<void>>();
 let firestoreListenersInitialized = false;
 let initializePromise: Promise<void> | null = null;
+let firestoreListenerCleanups: Array<() => void> = [];
 
 const isString = (value: unknown): value is string => typeof value === 'string';
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -207,14 +229,42 @@ const getRecord = (value: unknown): Record<string, number> => {
   }, {});
 };
 
+const getErrorMessage = (error: unknown) => error instanceof Error ? error.message : 'Terjadi kesalahan Firestore.';
+
+const isFirestorePermissionError = (error: unknown) =>
+  error instanceof Error && (
+    error.message.toLowerCase().includes('permission') ||
+    error.message.toLowerCase().includes('missing or insufficient permissions')
+  );
+
+const markFirestoreDocReady = (docName: FirestoreDocName) => {
+  firestoreSyncState[docName] = {
+    ready: true,
+    lastSyncedAt: new Date().toISOString(),
+    error: null,
+  };
+};
+
+const markFirestoreDocError = (docName: FirestoreDocName, error: unknown) => {
+  firestoreSyncState[docName] = {
+    ready: false,
+    lastSyncedAt: firestoreSyncState[docName].lastSyncedAt,
+    error: getErrorMessage(error),
+  };
+};
+
 const syncToFirestore = (docName: FirestoreDocName, data: Record<string, unknown>) => {
   const previousWrite = writeQueue.get(docName) || Promise.resolve();
   const nextWrite = previousWrite
     .catch(() => undefined)
     .then(async () => {
       await setDoc(docRef(docName), data, { merge: true });
+      markFirestoreDocReady(docName);
+      notifyDataUpdate();
     })
     .catch(err => {
+      markFirestoreDocError(docName, err);
+      notifyDataUpdate();
       console.error(`Firebase Firestore save error (${docName}):`, err);
       throw err;
     });
@@ -224,8 +274,14 @@ const syncToFirestore = (docName: FirestoreDocName, data: Record<string, unknown
 };
 
 // ==================== FIRESTORE LISTENERS ====================
-const setupFirestoreListeners = () => {
-  if (firestoreListenersInitialized) return;
+const setupFirestoreListeners = (force = false) => {
+  if (firestoreListenersInitialized && !force) return;
+
+  if (force) {
+    firestoreListenerCleanups.forEach((cleanup) => cleanup());
+    firestoreListenerCleanups = [];
+  }
+
   firestoreListenersInitialized = true;
 
   const listeners: Array<{ docName: FirestoreDocName; apply: (data: Record<string, unknown>) => void }> = [
@@ -286,12 +342,15 @@ const setupFirestoreListeners = () => {
     }
   ];
 
-  listeners.map(({ docName, apply }) =>
+  firestoreListenerCleanups = listeners.map(({ docName, apply }) =>
     onSnapshot(docRef(docName), (snapshot) => {
       if (!snapshot.exists()) return;
       apply(snapshot.data());
+      markFirestoreDocReady(docName);
       notifyDataUpdate();
     }, (error) => {
+      markFirestoreDocError(docName, error);
+      notifyDataUpdate();
       console.error(`Firebase Firestore listener error (${docName}):`, error);
     })
   );
@@ -299,18 +358,30 @@ const setupFirestoreListeners = () => {
 
 // Start listeners immediately
 setupFirestoreListeners();
+onAuthStateChanged(auth, () => {
+  setupFirestoreListeners(true);
+  initializePromise = null;
+  void initializeData().catch((error) => {
+    console.error('Firebase initialize after auth change gagal:', error);
+  });
+});
 
 export const initializeData = async () => {
+  if (!hasFirebaseConfig()) {
+    throw new Error('Konfigurasi Firebase belum lengkap. Periksa file firebase_config.json.');
+  }
+
   if (initializePromise) return initializePromise;
 
   initializePromise = (async () => {
-    const docs: Array<{ docName: FirestoreDocName; seed: Record<string, unknown> }> = [
+    const docs: Array<{ docName: FirestoreDocName; seed: Record<string, unknown>; requiresAuth?: boolean }> = [
       { docName: 'menus', seed: { list: initialMenus } },
       { docName: 'tables', seed: { list: initialTables } },
       { docName: 'orders', seed: { list: [] } },
       { docName: 'publicSettings', seed: { qrisPayload: '', menuCategories: ['Makanan', 'Minuman', 'Snack'], variantGroups: [] } },
       {
         docName: 'privateSettings',
+        requiresAuth: true,
         seed: {
           sheetAppUrl: '',
           sheetPubUrl: '',
@@ -323,20 +394,30 @@ export const initializeData = async () => {
           cashierPin: defaultSecuritySettings.cashierPin,
         }
       },
-      { docName: 'withdrawals', seed: { history: [], daily: {} } },
+      { docName: 'withdrawals', requiresAuth: true, seed: { history: [], daily: {} } },
     ];
 
     const snapshots = await Promise.all(
-      docs.map(async ({ docName }) => ({
-        docName,
-        snapshot: await getDoc(docRef(docName)),
-      }))
+      docs.map(async ({ docName, requiresAuth }) => {
+        try {
+          const snapshot = await getDoc(docRef(docName));
+          markFirestoreDocReady(docName);
+          return { docName, snapshot };
+        } catch (error) {
+          if (requiresAuth && isFirestorePermissionError(error)) {
+            markFirestoreDocError(docName, new Error('Perlu login Firebase Admin untuk membaca dokumen private.'));
+            return { docName, snapshot: null };
+          }
+          markFirestoreDocError(docName, error);
+          throw error;
+        }
+      })
     );
 
     await Promise.all(
       snapshots.map(({ docName, snapshot }) => {
         const config = docs.find(item => item.docName === docName);
-        if (!config || snapshot.exists()) return Promise.resolve();
+        if (!config || !snapshot || snapshot.exists()) return Promise.resolve();
         return syncToFirestore(docName, config.seed);
       })
     );
@@ -488,6 +569,7 @@ export const getQrisWithdrawn = (): number => state.qrisWithdrawnDaily[getLocalD
 export const getTotalQrisWithdrawnAllTime = (): number => Object.values(state.qrisWithdrawnDaily).reduce((sum, v) => sum + v, 0);
 
 export const getWithdrawalHistory = (): WithdrawalRecord[] => state.withdrawalHistory;
+export const getFirestoreSyncState = (): FirestoreSyncState => firestoreSyncState;
 export const saveWithdrawalRecord = (record: WithdrawalRecord) => {
   state.withdrawalHistory.unshift(record);
   syncToFirestore('withdrawals', { history: state.withdrawalHistory, daily: state.qrisWithdrawnDaily });
@@ -543,12 +625,8 @@ export const registerAdmin = async (email: string, password: string): Promise<st
 
 export const loginAdmin = async (email: string, password: string): Promise<{user?: AdminUser, error?: string}> => {
   if (email === 'admin@warkop.com' && password === 'admin123') {
-    if (state.securitySettings.adminAllowlistEnabled) {
-      const normalizedEmail = email.trim().toLowerCase();
-      const allowlist = state.securitySettings.adminAllowlist.map(item => item.toLowerCase());
-      if (!allowlist.includes(normalizedEmail)) {
-        return { error: 'Akses admin ditolak. Email ini belum masuk allowlist admin.' };
-      }
+    if (hasFirebaseConfig()) {
+      return { error: 'Akun demo lokal dinonaktifkan. Login memakai akun Firebase Admin atau Google Admin.' };
     }
     return { user: { id: 'default', username: 'admin@warkop.com', passwordHash: '', createdAt: '' } };
   }

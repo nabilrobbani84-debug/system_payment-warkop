@@ -21,6 +21,7 @@ import {
   getQrisPayload,
   saveQrisPayload,
   logoutAdmin,
+  initializeData,
   formatRupiah,
   getTaxSettings,
   saveTaxSettings,
@@ -34,6 +35,9 @@ import {
   saveVariantGroups,
   type VariantGroup,
   type VariantOption,
+  getWithdrawalHistory,
+  getFirestoreSyncState,
+  type FirestoreSyncState,
 } from '../store/dataManager';
 import { Settings, Plus, Edit, Trash2, Table2, FileText, Users, Home, BarChart3, ArrowLeft, ShoppingBag, QrCode, ChevronRight, LogOut, Clock3, CreditCard, Link2, Database, BadgeCheck, History, ShieldCheck, UserCog, LockKeyhole, Percent, KeyRound } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
@@ -56,6 +60,8 @@ export default function Admin() {
   const [variantGroups, setVariantGroups] = useState<VariantGroup[]>(() => getVariantGroups());
   const [tables, setTables] = useState<Table[]>(() => getTables());
   const [orders, setOrders] = useState<Order[]>(() => getOrders());
+  const [withdrawalHistory, setWithdrawalHistory] = useState(() => getWithdrawalHistory());
+  const [firestoreSync, setFirestoreSync] = useState<FirestoreSyncState>(() => getFirestoreSyncState());
 
   const [isMenuModalOpen, setIsMenuModalOpen] = useState(false);
   const [editingMenu, setEditingMenu] = useState<MenuItem | null>(null);
@@ -134,6 +140,8 @@ export default function Admin() {
     const loadedSecuritySettings = getSecuritySettings();
     setTaxSettings(loadedTaxSettings);
     setSecuritySettings(loadedSecuritySettings);
+    setWithdrawalHistory(getWithdrawalHistory());
+    setFirestoreSync({ ...getFirestoreSyncState() });
     setAdminAllowlistInput(loadedSecuritySettings.adminAllowlist.join('\n'));
     setOrderStatusDrafts(
       nextOrders.reduce<Record<string, Order['status']>>((acc, order) => {
@@ -146,6 +154,18 @@ export default function Admin() {
   useEffect(() => {
     return listenToDataChanges(loadData);
   }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    void initializeData()
+      .then(() => {
+        loadData();
+      })
+      .catch(() => {
+        loadData();
+      });
+  }, [isAuthenticated]);
 
   const handleLogout = async () => {
     const shouldLogout = await feedback.confirm({
@@ -184,7 +204,11 @@ export default function Admin() {
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
     .slice(0, 5);
   const paymentReadyCount = orders.filter(o => o.status === 'Lunas/Diproses').length;
-  const databaseSetupReady = Boolean(qrisPayloadInput || sheetAppUrl || sheetPubUrl);
+  const privateFirestoreReady = firestoreSync.privateSettings.ready;
+  const withdrawalFirestoreReady = firestoreSync.withdrawals.ready;
+  const firestoreSyncReadyCount = Object.values(firestoreSync).filter(item => item.ready).length;
+  const firestoreErrorCount = Object.values(firestoreSync).filter(item => item.error).length;
+  const latestWithdrawal = withdrawalHistory[0] || null;
   const ordersPerPage = 8;
   const filteredOrders = [...orders]
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
@@ -811,13 +835,13 @@ export default function Admin() {
                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '16px' }}>
                    <div style={{ backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: '16px', padding: '14px' }}>
                      <p style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase', margin: 0 }}>Sinkronisasi</p>
-                      <p style={{ fontSize: '14px', fontWeight: 700, margin: '6px 0 0', color: databaseSetupReady ? '#86efac' : '#fcd34d' }}>
-                        {databaseSetupReady ? 'Sudah siap' : 'Perlu dilengkapi'}
+                      <p style={{ fontSize: '14px', fontWeight: 700, margin: '6px 0 0', color: firestoreErrorCount === 0 ? '#86efac' : '#fcd34d' }}>
+                        {firestoreErrorCount === 0 ? 'Tersambung' : 'Perlu login / cek rules'}
                       </p>
                    </div>
                    <div style={{ backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: '16px', padding: '14px' }}>
-                     <p style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase', margin: 0 }}>Orders Diproses</p>
-                     <p style={{ fontSize: '14px', fontWeight: 700, margin: '6px 0 0' }}>{paymentReadyCount} transaksi</p>
+                     <p style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase', margin: 0 }}>Dokumen Siap</p>
+                     <p style={{ fontSize: '14px', fontWeight: 700, margin: '6px 0 0' }}>{firestoreSyncReadyCount}/6 dokumen</p>
                    </div>
                  </div>
                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
@@ -835,6 +859,47 @@ export default function Admin() {
                      </div>
                      <span style={{ fontSize: '12px', fontWeight: 700, color: sheetAppUrl ? '#86efac' : '#fcd34d' }}>{sheetAppUrl ? 'Tersimpan' : 'Kosong'}</span>
                    </div>
+                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 14px', borderRadius: '14px', backgroundColor: 'rgba(255,255,255,0.06)' }}>
+                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                       <ShieldCheck size={16} color="#38bdf8" />
+                       <span style={{ fontSize: '13px', fontWeight: 600 }}>Private settings admin</span>
+                     </div>
+                     <span style={{ fontSize: '12px', fontWeight: 700, color: privateFirestoreReady ? '#86efac' : '#fcd34d' }}>
+                       {privateFirestoreReady ? 'Terbaca' : 'Butuh auth'}
+                     </span>
+                   </div>
+                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 14px', borderRadius: '14px', backgroundColor: 'rgba(255,255,255,0.06)' }}>
+                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                       <History size={16} color="#38bdf8" />
+                       <span style={{ fontSize: '13px', fontWeight: 600 }}>Riwayat penarikan QRIS</span>
+                     </div>
+                     <span style={{ fontSize: '12px', fontWeight: 700, color: withdrawalFirestoreReady ? '#86efac' : '#fcd34d' }}>
+                       {withdrawalFirestoreReady ? `${withdrawalHistory.length} data` : 'Butuh auth'}
+                     </span>
+                   </div>
+                 </div>
+                 <div style={{ marginTop: '14px', paddingTop: '14px', borderTop: '1px solid rgba(255,255,255,0.08)', display: 'grid', gap: '8px' }}>
+                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                     <span style={{ fontSize: '12px', color: '#cbd5e1', fontWeight: 600 }}>Orders diproses</span>
+                     <span style={{ fontSize: '12px', color: 'white', fontWeight: 800 }}>{paymentReadyCount} transaksi</span>
+                   </div>
+                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                     <span style={{ fontSize: '12px', color: '#cbd5e1', fontWeight: 600 }}>Pajak & keamanan</span>
+                     <span style={{ fontSize: '12px', color: 'white', fontWeight: 800 }}>
+                       {taxSettings.enabled ? `${taxSettings.rate}% aktif` : 'Pajak nonaktif'} • {securitySettings.cashierPinEnabled ? 'PIN kasir aktif' : 'PIN kasir mati'}
+                     </span>
+                   </div>
+                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                     <span style={{ fontSize: '12px', color: '#cbd5e1', fontWeight: 600 }}>Penarikan terakhir</span>
+                     <span style={{ fontSize: '12px', color: 'white', fontWeight: 800 }}>
+                       {latestWithdrawal ? `${latestWithdrawal.destinationType} • Rp ${formatRupiah(latestWithdrawal.amount)}` : 'Belum ada data'}
+                     </span>
+                   </div>
+                   {firestoreSync.privateSettings.error && (
+                     <div style={{ marginTop: '6px', padding: '10px 12px', borderRadius: '12px', backgroundColor: 'rgba(245, 158, 11, 0.16)', color: '#fde68a', fontSize: '11px', lineHeight: 1.5 }}>
+                       Firestore private settings belum terbaca penuh: {firestoreSync.privateSettings.error}
+                     </div>
+                   )}
                  </div>
                </div>
             </div>
